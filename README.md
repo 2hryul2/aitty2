@@ -1,65 +1,138 @@
-# SSH AI Terminal
+﻿# Aitty
 
-SSH Terminal + AI CLI Integration for Windows
+Aitty is a Windows desktop SSH + AI terminal application built with:
 
-## Features
+- `WPF (.NET 8)` as the native desktop host
+- `WebView2` for the embedded frontend shell
+- `React + Vite` for the actual UI
+- `SSH.NET` for SSH connectivity
+- Anthropic Claude API integration for the AI panel
 
-- PuTTY-style SSH Terminal
-- AI CLI Coding Assistant
-- Windows-native configuration
-- Multiple SSH connection profiles
+## Architecture
 
-## Development
+This repository is a hybrid desktop app.
 
-### Prerequisites
+- `src/Aitty/`
+  - WPF desktop host
+  - WebView2 container
+  - IPC bridge handlers
+  - SSH / config / key / AI services in C#
+- `webapp/`
+  - React frontend loaded into WebView2 during development and packaged for production later
 
+The WPF app talks to the frontend through JSON-based IPC messages.
+
+## Requirements
+
+- Windows
+- `.NET 8 SDK`
 - Node.js 18+
 - npm 9+
+- WebView2 Runtime
 
-### Setup
+## Development Run
 
-```bash
-npm install
-npm run dev
+You need two processes during development.
+
+### 1. Start the web frontend
+
+```powershell
+cd D:\source\aitty2\webapp
+npm.cmd install
+npm.cmd run dev
 ```
 
-### Build for Production
+This starts Vite on `http://localhost:5173`.
 
-```bash
-# Web app
-npm run build
+### 2. Start the WPF host app
 
-# Electron app (Windows exe)
-npm run build:electron
+In a second terminal:
+
+```powershell
+cd D:\source\aitty2
+dotnet run --project .\src\Aitty\Aitty.csproj
 ```
 
-### Testing
+In `DEBUG`, the WPF app loads the frontend from `http://localhost:5173` inside WebView2.
 
-```bash
-npm test
-npm run test:ui
+## Current UI
+
+The app currently renders:
+
+- a top header with app title and subtitle
+- a left `SSH Terminal` panel
+  - connection form for host / port / username / password / private key
+  - xterm.js terminal surface
+  - connect / disconnect / clear controls
+- a draggable center splitter
+- a right `AI CLI Terminal` panel
+  - xterm.js-based AI terminal
+  - Claude API configuration commands
+  - model switching and streaming status badges
+
+## SSH Features
+
+Implemented in `src/Aitty/Services/SshService.cs`:
+
+- password authentication
+- private key authentication
+- shell stream creation
+- shell write / read
+- one-shot command execution
+- connection state tracking
+
+## AI Features
+
+Implemented in `src/Aitty/Services/ClaudeApiService.cs`:
+
+- Claude Messages API calls
+- streaming responses
+- model switching
+- conversation history
+- system prompt configuration
+
+## Testing
+
+Frontend tests:
+
+```powershell
+cd D:\source\aitty2\webapp
+npm.cmd test
+npm.cmd run test:ui
 ```
 
-## Project Structure
+WPF build check:
 
+```powershell
+cd D:\source\aitty2
+dotnet build .\src\Aitty\Aitty.csproj
 ```
+
+## Important Note
+
+Before any release or deployment build, explicit user confirmation must be obtained first.
+
+## Known Issues
+
+- The previous README described the repository like a root-level Node app, which was incorrect.
+- Production packaging flow is not fully documented yet.
+- Electron-related scripts still exist in `webapp/package.json`, but the active desktop host is WPF.
+
+## Repository Layout
+
+```text
+Aitty.sln
 src/
-  ├── components/      # React components
-  ├── hooks/          # Custom React hooks
-  ├── services/       # Business logic
-  ├── types/          # TypeScript types
-  ├── utils/          # Utilities
-  └── styles/         # CSS files
+  Aitty/
+    App.xaml
+    MainWindow.xaml
+    Ipc/
+    Models/
+    Services/
+webapp/
+  src/
+  package.json
+  vite.config.ts
+.env.example
+README.md
 ```
-
-## Configuration
-
-Configuration files are stored in:
-- Windows: `%APPDATA%\ssh-ai-terminal\config.json`
-- macOS/Linux: `~/.ssh-ai-terminal/config.json`
-
-SSH keys are expected in: `~/.ssh/`
-
-## License
-
-MIT

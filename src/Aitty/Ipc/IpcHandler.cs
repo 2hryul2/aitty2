@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Web.WebView2.Wpf;
 using Microsoft.Web.WebView2.Core;
@@ -19,21 +19,16 @@ public class IpcHandler
     private readonly SshService _sshService;
     private readonly ConfigService _configService;
     private readonly KeyManagerService _keyManagerService;
-    private readonly ClaudeApiService _claudeApiService;
+    private readonly LocalLlmService _localLlmService;
     private CancellationTokenSource? _streamingCts;
 
-    public IpcHandler(
-        WebView2 webView,
-        SshService sshService,
-        ConfigService configService,
-        KeyManagerService keyManagerService,
-        ClaudeApiService claudeApiService)
+    public IpcHandler(WebView2 webView, SshService sshService, ConfigService configService, KeyManagerService keyManagerService, LocalLlmService localLlmService)
     {
         _webView = webView;
         _sshService = sshService;
         _configService = configService;
         _keyManagerService = keyManagerService;
-        _claudeApiService = claudeApiService;
+        _localLlmService = localLlmService;
     }
 
     public void Register()
@@ -47,42 +42,24 @@ public class IpcHandler
 
         try
         {
-            var json = e.WebMessageAsJson;
-            var msg = JsonSerializer.Deserialize<IpcMessage>(json, JsonOptions);
-            if (msg is null)
-            {
-                return;
-            }
+            var msg = JsonSerializer.Deserialize<IpcMessage>(e.WebMessageAsJson, JsonOptions);
+            if (msg is null) return;
 
             var result = await HandleMessage(msg);
-            response = new IpcResponse
-            {
-                Id = msg.Id,
-                Type = $"{msg.Type}:result",
-                Payload = result
-            };
+            response = new IpcResponse { Id = msg.Id, Type = $"{msg.Type}:result", Payload = result };
         }
         catch (Exception ex)
         {
-            // Try to extract id from raw json for error response
-            var id = TryExtractId(e.WebMessageAsJson);
-            response = new IpcResponse
-            {
-                Id = id,
-                Type = "error",
-                Error = ex.Message
-            };
+            response = new IpcResponse { Id = TryExtractId(e.WebMessageAsJson), Type = "error", Error = ex.Message };
         }
 
-        var responseJson = JsonSerializer.Serialize(response, JsonOptions);
-        _webView.CoreWebView2.PostWebMessageAsJson(responseJson);
+        _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(response, JsonOptions));
     }
 
     private async Task<object?> HandleMessage(IpcMessage msg)
     {
         return msg.Type switch
         {
-            // SSH
             "ssh:connect" => await HandleSshConnect(msg.Payload),
             "ssh:disconnect" => HandleSshDisconnect(),
             "ssh:exec" => await HandleSshExec(msg.Payload),
@@ -91,37 +68,32 @@ public class IpcHandler
             "ssh:shell:write" => HandleSshShellWrite(msg.Payload),
             "ssh:shell:read" => HandleSshShellRead(),
 
-            // Config
             "config:load" => await HandleConfigLoad(),
             "config:save" => await HandleConfigSave(msg.Payload),
             "config:connections:add" => await HandleConfigAddConnection(msg.Payload),
             "config:connections:remove" => await HandleConfigRemoveConnection(msg.Payload),
 
-            // Keys
             "keys:list" => await HandleKeysList(),
             "keys:validate" => await HandleKeysValidate(msg.Payload),
             "keys:ssh-config" => await HandleKeysSshConfig(),
 
-            // AI
-            "ai:send" => await HandleAiSend(msg),
+            "ai:send" => await HandleAiSend(msg.Payload),
             "ai:stream" => await HandleAiStream(msg),
             "ai:stream:cancel" => HandleAiStreamCancel(),
             "ai:configure" => HandleAiConfigure(msg.Payload),
-            "ai:set-key" => HandleAiSetKey(msg.Payload),
             "ai:set-model" => HandleAiSetModel(msg.Payload),
             "ai:set-system" => HandleAiSetSystem(msg.Payload),
-            "ai:state" => HandleAiState(),
+            "ai:state" => await HandleAiState(),
             "ai:history" => HandleAiHistory(),
             "ai:clear" => HandleAiClear(),
+            "ai:models" => await HandleAiModels(),
+            "ai:ssh:analyze" => await HandleAiAnalyzeSsh(),
+            "ai:ssh:suggest-command" => await HandleAiSuggestCommand(),
 
-            // App
             "app:version" => GetAppVersion(),
-
             _ => throw new NotSupportedException($"Unknown IPC type: {msg.Type}")
         };
     }
-
-    // --- SSH handlers ---
 
     private async Task<object> HandleSshConnect(object? payload)
     {
@@ -152,14 +124,7 @@ public class IpcHandler
     private object HandleSshState()
     {
         var state = _sshService.State;
-        return new
-        {
-            isConnected = _sshService.IsConnected,
-            isConnecting = state.IsConnecting,
-            error = state.Error,
-            host = state.Connection?.Host,
-            connectionTime = state.ConnectionTime?.ToString("o")
-        };
+        return new { isConnected = _sshService.IsConnected, isConnecting = state.IsConnecting, error = state.Error, host = state.Connection?.Host, connectionTime = state.ConnectionTime?.ToString("o") };
     }
 
     private object HandleSshShellWrite(object? payload)
@@ -171,72 +136,23 @@ public class IpcHandler
 
     private object HandleSshShellRead()
     {
-        var data = _sshService.ReadFromShell();
-        return new { data };
+        return new { data = _sshService.ReadFromShell() };
     }
 
-    // --- Config handlers ---
+    private async Task<object> HandleConfigLoad() => await _configService.LoadAsync();
+    private async Task<object> HandleConfigSave(object? payload) { await _configService.SaveAsync(DeserializePayload<AppConfig>(payload)); return new { success = true }; }
+    private async Task<object> HandleConfigAddConnection(object? payload) { await _configService.AddConnectionAsync(DeserializePayload<SshConnection>(payload)); return new { success = true }; }
+    private async Task<object> HandleConfigRemoveConnection(object? payload) { await _configService.RemoveConnectionAsync(DeserializePayload<HostPayload>(payload).Host); return new { success = true }; }
 
-    private async Task<object> HandleConfigLoad()
+    private async Task<object> HandleKeysList() { var keys = await _keyManagerService.FindKeysAsync(); return new { keys, directory = _keyManagerService.GetKeyDirectory() }; }
+    private async Task<object> HandleKeysValidate(object? payload) { var valid = await _keyManagerService.IsValidKeyFileAsync(DeserializePayload<KeyPathPayload>(payload).Path); return new { valid }; }
+    private async Task<object> HandleKeysSshConfig() => await _keyManagerService.ReadSshConfigAsync();
+
+    private async Task<object> HandleAiSend(object? payload)
     {
-        return await _configService.LoadAsync();
-    }
-
-    private async Task<object> HandleConfigSave(object? payload)
-    {
-        var config = DeserializePayload<AppConfig>(payload);
-        await _configService.SaveAsync(config);
-        return new { success = true };
-    }
-
-    private async Task<object> HandleConfigAddConnection(object? payload)
-    {
-        var conn = DeserializePayload<SshConnection>(payload);
-        await _configService.AddConnectionAsync(conn);
-        return new { success = true };
-    }
-
-    private async Task<object> HandleConfigRemoveConnection(object? payload)
-    {
-        var data = DeserializePayload<HostPayload>(payload);
-        await _configService.RemoveConnectionAsync(data.Host);
-        return new { success = true };
-    }
-
-    // --- Key handlers ---
-
-    private async Task<object> HandleKeysList()
-    {
-        var keys = await _keyManagerService.FindKeysAsync();
-        return new { keys, directory = _keyManagerService.GetKeyDirectory() };
-    }
-
-    private async Task<object> HandleKeysValidate(object? payload)
-    {
-        var data = DeserializePayload<KeyPathPayload>(payload);
-        var valid = await _keyManagerService.IsValidKeyFileAsync(data.Path);
-        return new { valid };
-    }
-
-    private async Task<object> HandleKeysSshConfig()
-    {
-        var config = await _keyManagerService.ReadSshConfigAsync();
-        return config;
-    }
-
-    // --- AI handlers ---
-
-    private async Task<object> HandleAiSend(IpcMessage msg)
-    {
-        var data = DeserializePayload<AiChatRequest>(msg.Payload);
-        var response = await _claudeApiService.SendMessageAsync(data.Message);
-        return new
-        {
-            content = response.Content,
-            model = response.Model,
-            inputTokens = response.InputTokens,
-            outputTokens = response.OutputTokens
-        };
+        var data = DeserializePayload<AiChatRequest>(payload);
+        var response = await _localLlmService.SendMessageAsync(data.Message);
+        return new { content = response.Content, model = response.Model, inputTokens = 0, outputTokens = 0 };
     }
 
     private async Task<object> HandleAiStream(IpcMessage msg)
@@ -244,21 +160,12 @@ public class IpcHandler
         var data = DeserializePayload<AiChatRequest>(msg.Payload);
         _streamingCts = new CancellationTokenSource();
 
-        var fullContent = await _claudeApiService.SendStreamingAsync(
-            data.Message,
-            chunk =>
-            {
-                var chunkResponse = new IpcResponse
-                {
-                    Id = msg.Id,
-                    Type = "ai:stream:chunk",
-                    Payload = new { chunk }
-                };
-                var chunkJson = JsonSerializer.Serialize(chunkResponse, JsonOptions);
-                _webView.Dispatcher.Invoke(() =>
-                    _webView.CoreWebView2.PostWebMessageAsJson(chunkJson));
-            },
-            _streamingCts.Token);
+        var fullContent = await _localLlmService.SendStreamingAsync(data.Message, chunk =>
+        {
+            var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:stream:chunk", Payload = new { chunk } };
+            var chunkJson = JsonSerializer.Serialize(chunkResponse, JsonOptions);
+            _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(chunkJson));
+        }, _streamingCts.Token);
 
         return new { content = fullContent, done = true };
     }
@@ -271,57 +178,56 @@ public class IpcHandler
 
     private object HandleAiConfigure(object? payload)
     {
-        var config = DeserializePayload<AiConfig>(payload);
-        _claudeApiService.Configure(config);
-        return new { success = true };
-    }
-
-    private object HandleAiSetKey(object? payload)
-    {
-        var data = DeserializePayload<ApiKeyPayload>(payload);
-        _claudeApiService.SetApiKey(data.ApiKey);
+        _localLlmService.Configure(DeserializePayload<AiConfig>(payload));
         return new { success = true };
     }
 
     private object HandleAiSetModel(object? payload)
     {
-        var data = DeserializePayload<ModelPayload>(payload);
-        _claudeApiService.SetModel(data.Model);
-        return new { success = true, model = data.Model };
+        var model = DeserializePayload<ModelPayload>(payload).Model;
+        _localLlmService.SetModel(model);
+        return new { success = true, model };
     }
 
     private object HandleAiSetSystem(object? payload)
     {
-        var data = DeserializePayload<SystemPromptPayload>(payload);
-        _claudeApiService.SetSystemPrompt(data.SystemPrompt);
+        _localLlmService.SetSystemPrompt(DeserializePayload<SystemPromptPayload>(payload).SystemPrompt);
         return new { success = true };
     }
 
-    private object HandleAiState()
+    private async Task<object> HandleAiState()
     {
-        return new
-        {
-            isConfigured = _claudeApiService.IsConfigured,
-            model = _claudeApiService.CurrentModel,
-            historyCount = _claudeApiService.History.Count
-        };
+        return new { isConfigured = await _localLlmService.IsEngineAvailableAsync(), model = _localLlmService.CurrentModel, historyCount = _localLlmService.History.Count, engine = "ollama" };
     }
 
     private object HandleAiHistory()
     {
-        return new
-        {
-            messages = _claudeApiService.History.Select(m => new { m.Role, m.Content }).ToList()
-        };
+        return new { messages = _localLlmService.History.Select(m => new { m.Role, m.Content }).ToList() };
     }
 
     private object HandleAiClear()
     {
-        _claudeApiService.ClearHistory();
+        _localLlmService.ClearHistory();
         return new { success = true };
     }
 
-    // --- App handlers ---
+    private async Task<object> HandleAiModels()
+    {
+        var models = await _localLlmService.ListModelsAsync();
+        return new { models };
+    }
+
+    private async Task<object> HandleAiAnalyzeSsh()
+    {
+        var content = await _localLlmService.AnalyzeSshOutputAsync(_sshService.GetRecentOutput());
+        return new { content };
+    }
+
+    private async Task<object> HandleAiSuggestCommand()
+    {
+        var content = await _localLlmService.SuggestCommandAsync(_sshService.GetRecentOutput());
+        return new { content };
+    }
 
     private static object GetAppVersion()
     {
@@ -329,19 +235,15 @@ public class IpcHandler
         return new { version = version?.ToString() ?? "0.1.0" };
     }
 
-    // --- Helpers ---
-
     private static T DeserializePayload<T>(object? payload) where T : class
     {
         if (payload is JsonElement element)
         {
-            return JsonSerializer.Deserialize<T>(element.GetRawText(), JsonOptions)
-                ?? throw new ArgumentException($"Failed to deserialize payload to {typeof(T).Name}");
+            return JsonSerializer.Deserialize<T>(element.GetRawText(), JsonOptions) ?? throw new ArgumentException($"Failed to deserialize payload to {typeof(T).Name}");
         }
 
         var json = JsonSerializer.Serialize(payload, JsonOptions);
-        return JsonSerializer.Deserialize<T>(json, JsonOptions)
-            ?? throw new ArgumentException($"Failed to deserialize payload to {typeof(T).Name}");
+        return JsonSerializer.Deserialize<T>(json, JsonOptions) ?? throw new ArgumentException($"Failed to deserialize payload to {typeof(T).Name}");
     }
 
     private static string TryExtractId(string json)
@@ -358,11 +260,9 @@ public class IpcHandler
     }
 }
 
-// Payload DTOs
 internal class CommandPayload { public string Command { get; set; } = string.Empty; }
 internal class ShellWritePayload { public string Data { get; set; } = string.Empty; }
 internal class HostPayload { public string Host { get; set; } = string.Empty; }
 internal class KeyPathPayload { public string Path { get; set; } = string.Empty; }
-internal class ApiKeyPayload { public string ApiKey { get; set; } = string.Empty; }
 internal class ModelPayload { public string Model { get; set; } = string.Empty; }
 internal class SystemPromptPayload { public string? SystemPrompt { get; set; } }

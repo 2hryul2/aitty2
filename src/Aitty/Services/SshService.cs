@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using Renci.SshNet;
 using Aitty.Models;
 
@@ -6,9 +6,11 @@ namespace Aitty.Services;
 
 public class SshService : IDisposable
 {
+    private const int MaxRecentLines = 200;
     private SshClient? _client;
     private ShellStream? _shellStream;
     private readonly SshConnectionState _state = new();
+    private readonly Queue<string> _recentLines = new();
 
     public SshConnectionState State => _state;
     public bool IsConnected => _client?.IsConnected == true;
@@ -38,16 +40,17 @@ public class SshService : IDisposable
                     authMethods.Add(new PasswordAuthenticationMethod(connection.Username, connection.Password));
                 }
 
-                var connInfo = new ConnectionInfo(
-                    connection.Host, connection.Port, connection.Username, authMethods.ToArray());
-                connInfo.Timeout = TimeSpan.FromSeconds(30);
+                var connInfo = new ConnectionInfo(connection.Host, connection.Port, connection.Username, authMethods.ToArray())
+                {
+                    Timeout = TimeSpan.FromSeconds(30)
+                };
 
                 _client = new SshClient(connInfo);
                 _client.Connect();
-
                 _shellStream = _client.CreateShellStream("xterm", 120, 40, 800, 600, 4096);
             });
 
+            _recentLines.Clear();
             _state.IsConnected = true;
             _state.IsConnecting = false;
             _state.Connection = connection;
@@ -89,11 +92,10 @@ public class SshService : IDisposable
             using var cmd = _client.CreateCommand(command);
             cmd.CommandTimeout = TimeSpan.FromSeconds(60);
             var result = cmd.Execute();
-
-            if (!string.IsNullOrEmpty(cmd.Error))
-                return result + "\n" + cmd.Error;
-
-            return result;
+            var output = !string.IsNullOrEmpty(cmd.Error) ? result + "\n" + cmd.Error : result;
+            Remember(command);
+            Remember(output);
+            return output;
         });
     }
 
@@ -114,6 +116,10 @@ public class SshService : IDisposable
     {
         _shellStream?.Write(data);
         _shellStream?.Flush();
+        if (!string.IsNullOrWhiteSpace(data) && data != "\r")
+        {
+            Remember(data.Replace("\r", string.Empty));
+        }
     }
 
     public string? ReadFromShell()
@@ -121,13 +127,37 @@ public class SshService : IDisposable
         if (_shellStream is null || !_shellStream.DataAvailable)
             return null;
 
-        return _shellStream.Read();
+        var output = _shellStream.Read();
+        Remember(output);
+        return output;
+    }
+
+    public string GetRecentOutput(int lineCount = 80)
+    {
+        return string.Join("\n", _recentLines.TakeLast(lineCount));
     }
 
     public void Dispose()
     {
         Disconnect();
         GC.SuppressFinalize(this);
+    }
+
+    private void Remember(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        foreach (var line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        {
+            _recentLines.Enqueue(line);
+            while (_recentLines.Count > MaxRecentLines)
+            {
+                _recentLines.Dequeue();
+            }
+        }
     }
 
     private static string ResolvePath(string path)

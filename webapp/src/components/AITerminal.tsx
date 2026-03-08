@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+﻿import { useEffect, useRef, useState, useCallback } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
@@ -6,30 +6,30 @@ import { useTerminalResize } from '@hooks/useTerminalResize'
 import { ai } from '@bridge/ipcBridge'
 import { logger } from '@utils/logger'
 
-export interface AITerminalProps {
-  onCommand?: (command: string) => void
-  onOutput?: (output: string) => void
-}
-
-const AVAILABLE_MODELS = [
-  { id: 'claude-sonnet-4-6-20250514', name: 'Claude Sonnet 4.6' },
-  { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
-  { id: 'claude-opus-4-6-20250514', name: 'Claude Opus 4.6' },
-]
+const DEFAULT_MODEL = 'qwen2.5-coder:7b'
+const DEFAULT_SYSTEM_PROMPT = 'You are a local Linux SSH assistant. Analyze terminal output, explain issues, and suggest safe next commands. Prefer minimal-risk commands first.'
+const OLLAMA_ENDPOINT = 'http://localhost:11434'
 
 function isWebView2(): boolean {
   return !!window.chrome?.webview
 }
 
-export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
+export function AITerminal() {
   const terminalRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const inputBufferRef = useRef('')
   const isProcessingRef = useRef(false)
+
   const [isConfigured, setIsConfigured] = useState(false)
-  const [currentModel, setCurrentModel] = useState('claude-sonnet-4-6-20250514')
+  const [currentModel, setCurrentModel] = useState(DEFAULT_MODEL)
   const [isStreaming, setIsStreaming] = useState(false)
+  const [engineName, setEngineName] = useState('ollama')
+  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [isSettingsOpen, setIsSettingsOpen] = useState(true)
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT)
+  const [statusMessage, setStatusMessage] = useState('Not checked')
+  const [isBusy, setIsBusy] = useState(false)
 
   const resizeRef = useTerminalResize(() => {
     if (fitAddonRef.current && termRef.current) {
@@ -38,144 +38,128 @@ export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
   })
 
   const writePrompt = useCallback(() => {
-    termRef.current?.write('\r\n\x1b[36mai\x1b[0m@\x1b[33maitty\x1b[0m:\x1b[32m~\x1b[0m$ ')
+    termRef.current?.write('\r\n\x1b[36mlocal\x1b[0m@\x1b[33maitty\x1b[0m:\x1b[32m~\x1b[0m$ ')
   }, [])
+
+  const writeLine = useCallback((text: string) => {
+    termRef.current?.writeln(text)
+  }, [])
+
+  const loadEngineState = useCallback(async (announce = false) => {
+    try {
+      const [state, models] = await Promise.all([ai.state(), ai.models()])
+      setIsConfigured(state.isConfigured)
+      setCurrentModel(state.model || DEFAULT_MODEL)
+      setEngineName(state.engine || 'ollama')
+      setAvailableModels(models.models)
+      setStatusMessage(state.isConfigured ? `Ready on ${OLLAMA_ENDPOINT}` : `Offline at ${OLLAMA_ENDPOINT}`)
+
+      if (announce) {
+        writeLine(`\x1b[32mEngine: ${state.engine} | Model: ${state.model}\x1b[0m`)
+      }
+    } catch (error) {
+      setIsConfigured(false)
+      setAvailableModels([])
+      setStatusMessage(`Offline at ${OLLAMA_ENDPOINT}`)
+      if (announce) {
+        const message = error instanceof Error ? error.message : 'Ollama is not reachable'
+        writeLine(`\x1b[31m${message}\x1b[0m`)
+      }
+    }
+  }, [writeLine])
 
   const printHelp = useCallback(() => {
     const term = termRef.current
     if (!term) return
     term.writeln('')
-    term.writeln('\x1b[1;36m--- Aitty AI Terminal Commands ---\x1b[0m')
+    term.writeln('\x1b[1;36m--- Local LLM Terminal Commands ---\x1b[0m')
     term.writeln('')
-    term.writeln('  \x1b[33mconfig set api-key <KEY>\x1b[0m   Set Claude API key')
-    term.writeln('  \x1b[33mconfig set model <MODEL>\x1b[0m   Set AI model')
-    term.writeln('  \x1b[33mconfig set system <PROMPT>\x1b[0m Set system prompt')
-    term.writeln('  \x1b[33mmodel list\x1b[0m                 List available models')
-    term.writeln('  \x1b[33mmodel use <MODEL>\x1b[0m          Switch model')
-    term.writeln('  \x1b[33mstatus\x1b[0m                     Show API status')
+    term.writeln('  \x1b[33mengine status\x1b[0m              Check Ollama availability')
+    term.writeln('  \x1b[33mmodel list\x1b[0m                List installed local models')
+    term.writeln('  \x1b[33mmodel use <MODEL>\x1b[0m         Switch active model')
+    term.writeln('  \x1b[33msystem set <PROMPT>\x1b[0m      Update system prompt')
+    term.writeln('  \x1b[33manalyze last\x1b[0m             Analyze recent SSH output')
+    term.writeln('  \x1b[33msuggest command\x1b[0m          Suggest one safe next SSH command')
+    term.writeln('  \x1b[33mstatus\x1b[0m                     Show local LLM state')
     term.writeln('  \x1b[33mclear\x1b[0m                      Clear terminal')
     term.writeln('  \x1b[33mreset\x1b[0m                      Clear conversation history')
     term.writeln('  \x1b[33mhelp\x1b[0m                       Show this help')
     term.writeln('')
-    term.writeln('  Any other input is sent to Claude as a message.')
+    term.writeln('  Any other input is sent to the local model.')
   }, [])
 
   const handleBuiltinCommand = useCallback(async (command: string): Promise<boolean> => {
-    const term = termRef.current
-    if (!term) return false
+    const normalized = command.trim()
+    const lower = normalized.toLowerCase()
+    const parts = normalized.split(/\s+/)
 
-    const parts = command.trim().split(/\s+/)
-    const cmd = parts[0]?.toLowerCase()
-
-    if (cmd === 'help') {
+    if (lower === 'help') {
       printHelp()
       return true
     }
 
-    if (cmd === 'clear') {
-      term.clear()
+    if (lower === 'clear') {
+      termRef.current?.clear()
       return true
     }
 
-    if (cmd === 'reset') {
+    if (lower === 'reset') {
+      await ai.clear().catch(() => undefined)
+      writeLine('\x1b[32mConversation history cleared.\x1b[0m')
+      return true
+    }
+
+    if (lower === 'status' || lower === 'engine status') {
+      await loadEngineState(true)
+      return true
+    }
+
+    if (lower === 'model list') {
       try {
-        await ai.clear()
-        term.writeln('\r\n\x1b[32mConversation history cleared.\x1b[0m')
-      } catch {
-        term.writeln('\r\n\x1b[32mConversation history cleared (local).\x1b[0m')
+        const result = await ai.models()
+        setAvailableModels(result.models)
+        writeLine('\x1b[1mInstalled Models:\x1b[0m')
+        result.models.forEach((model) => {
+          const marker = model === currentModel ? ' \x1b[32m<current>\x1b[0m' : ''
+          writeLine(`  \x1b[33m${model}\x1b[0m${marker}`)
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to list models'
+        writeLine(`\x1b[31m${message}\x1b[0m`)
       }
       return true
     }
 
-    if (cmd === 'status') {
-      try {
-        const state = await ai.state()
-        term.writeln('')
-        term.writeln(`\x1b[1mAPI Status:\x1b[0m`)
-        term.writeln(`  Configured: ${state.isConfigured ? '\x1b[32mYes\x1b[0m' : '\x1b[31mNo\x1b[0m'}`)
-        term.writeln(`  Model: \x1b[33m${state.model}\x1b[0m`)
-        term.writeln(`  History: ${state.historyCount} messages`)
-      } catch {
-        term.writeln('')
-        term.writeln(`  API: \x1b[33mWebView2 not available (browser mode)\x1b[0m`)
-        term.writeln(`  Model: \x1b[33m${currentModel}\x1b[0m`)
-      }
+    if (parts[0]?.toLowerCase() === 'model' && parts[1]?.toLowerCase() === 'use' && parts[2]) {
+      const model = parts.slice(2).join(' ')
+      await ai.setModel(model)
+      setCurrentModel(model)
+      writeLine(`\x1b[32mActive model: ${model}\x1b[0m`)
       return true
     }
 
-    if (cmd === 'model') {
-      if (parts[1]?.toLowerCase() === 'list') {
-        term.writeln('')
-        term.writeln('\x1b[1mAvailable Models:\x1b[0m')
-        for (const m of AVAILABLE_MODELS) {
-          const marker = m.id === currentModel ? ' \x1b[32m← current\x1b[0m' : ''
-          term.writeln(`  \x1b[33m${m.id}\x1b[0m (${m.name})${marker}`)
-        }
-        return true
-      }
-
-      if (parts[1]?.toLowerCase() === 'use' && parts[2]) {
-        const model = parts[2]
-        try {
-          const result = await ai.setModel(model)
-          setCurrentModel(result.model)
-          term.writeln(`\r\n\x1b[32mSwitched to: ${result.model}\x1b[0m`)
-        } catch {
-          setCurrentModel(model)
-          term.writeln(`\r\n\x1b[32mModel set to: ${model}\x1b[0m`)
-        }
-        return true
-      }
+    if (parts[0]?.toLowerCase() === 'system' && parts[1]?.toLowerCase() === 'set' && parts[2]) {
+      const prompt = parts.slice(2).join(' ')
+      await ai.setSystem(prompt)
+      setSystemPrompt(prompt)
+      writeLine('\x1b[32mSystem prompt updated.\x1b[0m')
+      return true
     }
 
-    if (cmd === 'config' && parts[1]?.toLowerCase() === 'set') {
-      const key = parts[2]?.toLowerCase()
-      const value = parts.slice(3).join(' ')
+    if (lower === 'analyze last') {
+      const result = await ai.analyzeLast()
+      writeLine(result.content)
+      return true
+    }
 
-      if (!key || !value) {
-        term.writeln('\r\n\x1b[31mUsage: config set <api-key|model|system> <value>\x1b[0m')
-        return true
-      }
-
-      if (key === 'api-key') {
-        try {
-          await ai.setKey(value)
-          setIsConfigured(true)
-          term.writeln('\r\n\x1b[32mAPI key configured successfully.\x1b[0m')
-        } catch {
-          term.writeln('\r\n\x1b[33mAPI key saved (will apply when WebView2 is available).\x1b[0m')
-        }
-        return true
-      }
-
-      if (key === 'model') {
-        try {
-          await ai.setModel(value)
-          setCurrentModel(value)
-          term.writeln(`\r\n\x1b[32mModel set to: ${value}\x1b[0m`)
-        } catch {
-          setCurrentModel(value)
-          term.writeln(`\r\n\x1b[32mModel set to: ${value}\x1b[0m`)
-        }
-        return true
-      }
-
-      if (key === 'system') {
-        try {
-          await ai.setSystem(value)
-          term.writeln('\r\n\x1b[32mSystem prompt updated.\x1b[0m')
-        } catch {
-          term.writeln('\r\n\x1b[33mSystem prompt saved (will apply when WebView2 is available).\x1b[0m')
-        }
-        return true
-      }
-
-      term.writeln(`\r\n\x1b[31mUnknown config key: ${key}\x1b[0m`)
+    if (lower === 'suggest command') {
+      const result = await ai.suggestCommand()
+      writeLine(result.content)
       return true
     }
 
     return false
-  }, [currentModel, printHelp])
+  }, [currentModel, loadEngineState, printHelp, writeLine])
 
   const sendMessage = useCallback(async (message: string) => {
     const term = termRef.current
@@ -183,51 +167,33 @@ export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
 
     isProcessingRef.current = true
     setIsStreaming(true)
-    onCommand?.(message)
-
     term.writeln('')
 
     if (!isWebView2()) {
       term.writeln('\x1b[31mWebView2 not available. Running in browser mode.\x1b[0m')
-      term.writeln('\x1b[33mClaude API requires the native WPF app.\x1b[0m')
+      term.writeln('\x1b[33mLocal LLM calls require the native WPF host.\x1b[0m')
       isProcessingRef.current = false
       setIsStreaming(false)
       return
     }
 
     try {
-      // Show streaming indicator
-      term.write('\x1b[2m...\x1b[0m')
-
-      const response = await ai.stream(
-        message,
-        (chunk) => {
-          // On first chunk, clear the "..." indicator
-          if (term) {
-            term.write(chunk)
-          }
-        }
-      )
-
-      // Final newline + token info
+      const response = await ai.stream(message, (chunk) => {
+        term.write(chunk)
+      })
       term.writeln('')
-      onOutput?.(response.content)
+      if (!response.content.trim()) {
+        term.writeln('\x1b[33mNo content returned by local model.\x1b[0m')
+      }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error'
-
-      if (errorMsg.includes('not configured')) {
-        term.writeln(`\x1b[31m${errorMsg}\x1b[0m`)
-        term.writeln('\x1b[33mRun: config set api-key <YOUR_KEY>\x1b[0m')
-      } else {
-        term.writeln(`\r\n\x1b[31mError: ${errorMsg}\x1b[0m`)
-      }
+      term.writeln(`\r\n\x1b[31mError: ${errorMsg}\x1b[0m`)
     } finally {
       isProcessingRef.current = false
       setIsStreaming(false)
     }
-  }, [onCommand, onOutput])
+  }, [])
 
-  // Initialize xterm.js
   useEffect(() => {
     if (!terminalRef.current) return
 
@@ -258,28 +224,18 @@ export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
     termRef.current = term
     fitAddonRef.current = fitAddon
 
-    // Warning banner
-    term.writeln('\x1b[1;33m╔════════════════════════════════════════════════════╗\x1b[0m')
-    term.writeln('\x1b[1;33m║  ⚠ AI는 부정확한 정보를 제공할 수 있습니다.       ║\x1b[0m')
-    term.writeln('\x1b[33m║  실행 전 반드시 내용을 검토하세요                  ║\x1b[0m')
-    term.writeln('\x1b[1;33m╚════════════════════════════════════════════════════╝\x1b[0m')
-    term.writeln('')
+    term.writeln('\x1b[1;36mLocal LLM Terminal\x1b[0m')
+    term.writeln('\x1b[33mEngine: Ollama (localhost:11434)\x1b[0m')
+    term.writeln('Use the settings panel above to select a model and prompt.')
     term.writeln('Type \x1b[33mhelp\x1b[0m for available commands.')
-    term.writeln('Type \x1b[33mconfig set api-key <KEY>\x1b[0m to get started.')
-    term.write('\r\n\x1b[36mai\x1b[0m@\x1b[33maitty\x1b[0m:\x1b[32m~\x1b[0m$ ')
+    writePrompt()
 
-    // Check initial state
     if (isWebView2()) {
-      ai.state().then(state => {
-        setIsConfigured(state.isConfigured)
-        setCurrentModel(state.model)
-      }).catch(() => {})
+      loadEngineState(false).catch(() => undefined)
     }
 
-    // Handle input
     term.onData((data: string) => {
       if (isProcessingRef.current) {
-        // Allow Ctrl+C to cancel during streaming
         if (data === '\x03') {
           ai.cancelStream().catch(() => {})
           isProcessingRef.current = false
@@ -293,18 +249,15 @@ export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
       if (data === '\r') {
         const command = inputBufferRef.current.trim()
         inputBufferRef.current = ''
-
         if (!command) {
           writePrompt()
           return
         }
 
-        // Try builtin commands first
         handleBuiltinCommand(command).then(handled => {
           if (handled) {
             writePrompt()
           } else {
-            // Send to Claude API
             sendMessage(command).then(() => writePrompt())
           }
         })
@@ -314,12 +267,10 @@ export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
           term.write('\b \b')
         }
       } else if (data === '\x03') {
-        // Ctrl+C
         inputBufferRef.current = ''
         term.writeln('^C')
         writePrompt()
       } else if (data === '\x0c') {
-        // Ctrl+L
         term.clear()
         writePrompt()
       } else if (data.charCodeAt(0) >= 32) {
@@ -328,12 +279,42 @@ export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
       }
     })
 
-    logger.info('AI Terminal initialized')
+    logger.info('Local LLM Terminal initialized')
 
     return () => {
       term.dispose()
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [handleBuiltinCommand, loadEngineState, sendMessage, writePrompt])
+
+  const handleApplySettings = async () => {
+    setIsBusy(true)
+    try {
+      await ai.configure({ model: currentModel, systemPrompt })
+      await ai.setModel(currentModel)
+      await ai.setSystem(systemPrompt)
+      await loadEngineState(false)
+      writeLine(`\x1b[32mApplied settings: ${currentModel}\x1b[0m`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to apply settings'
+      writeLine(`\x1b[31m${message}\x1b[0m`)
+    } finally {
+      setIsBusy(false)
+    }
+  }
+
+  const handleAnalyzeClick = async () => {
+    writeLine('\x1b[36mRunning analyze last...\x1b[0m')
+    const result = await ai.analyzeLast()
+    writeLine(result.content)
+    writePrompt()
+  }
+
+  const handleSuggestClick = async () => {
+    writeLine('\x1b[36mRunning suggest command...\x1b[0m')
+    const result = await ai.suggestCommand()
+    writeLine(result.content)
+    writePrompt()
+  }
 
   const handleClear = () => {
     termRef.current?.clear()
@@ -344,7 +325,7 @@ export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
   const handleCancel = async () => {
     try {
       await ai.cancelStream()
-    } catch { /* ignore */ }
+    } catch {}
     isProcessingRef.current = false
     setIsStreaming(false)
     termRef.current?.writeln('\r\n\x1b[33mCancelled\x1b[0m')
@@ -352,25 +333,64 @@ export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
   }
 
   return (
-    <div className="ai-terminal">
+    <div className="ai-terminal local-llm-terminal">
       <div className="terminal-header">
-        <h2>AI CLI Terminal</h2>
+        <h2>Local LLM Terminal</h2>
         <div className="terminal-status">
           {isConfigured ? (
             <>
-              <span className="status-badge connected">● Connected</span>
-              <span className="status-info">{currentModel.split('-').slice(0, -1).join('-')}</span>
+              <span className="status-badge connected">Ready</span>
+              <span className="status-info">{engineName} | {currentModel}</span>
             </>
           ) : (
-            <span className="status-badge disconnected">○ No API Key</span>
+            <span className="status-badge disconnected">Ollama Offline</span>
           )}
-          {isStreaming && <span className="status-badge streaming">⟳ Streaming</span>}
+          {isStreaming && <span className="status-badge streaming">Generating</span>}
         </div>
         <div className="terminal-controls">
+          <button onClick={() => setIsSettingsOpen((prev) => !prev)}>{isSettingsOpen ? 'Hide Settings' : 'Settings'}</button>
           <button onClick={handleClear}>Clear</button>
           {isStreaming && <button onClick={handleCancel}>Cancel</button>}
         </div>
       </div>
+
+      {isSettingsOpen && (
+        <div className="llm-settings-panel">
+          <div className="settings-grid">
+            <div className="form-group">
+              <label>Engine Endpoint</label>
+              <input type="text" value={OLLAMA_ENDPOINT} readOnly />
+            </div>
+            <div className="form-group">
+              <label>Engine Status</label>
+              <input type="text" value={statusMessage} readOnly />
+            </div>
+            <div className="form-group">
+              <label>Model</label>
+              <select value={currentModel} onChange={(e) => setCurrentModel(e.target.value)}>
+                {availableModels.length === 0 ? <option value={currentModel}>{currentModel}</option> : null}
+                {availableModels.map((model) => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group settings-actions">
+              <label>Controls</label>
+              <div className="button-row">
+                <button type="button" onClick={() => loadEngineState(true)} disabled={isBusy}>Check</button>
+                <button type="button" onClick={handleApplySettings} disabled={isBusy}>Apply</button>
+                <button type="button" onClick={handleAnalyzeClick} disabled={!isConfigured}>Analyze Last</button>
+                <button type="button" onClick={handleSuggestClick} disabled={!isConfigured}>Suggest Command</button>
+              </div>
+            </div>
+          </div>
+          <div className="form-group prompt-group">
+            <label>System Prompt</label>
+            <textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} rows={3} />
+          </div>
+        </div>
+      )}
+
       <div className="terminal-container" ref={resizeRef} style={{ flex: 1 }}>
         <div ref={terminalRef} className="terminal-content" />
       </div>
