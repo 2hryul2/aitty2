@@ -258,11 +258,11 @@ export function AITerminal({ onCommand, onOutput }: AITerminalProps) {
     termRef.current = term
     fitAddonRef.current = fitAddon
 
-    // Welcome
-    term.writeln('\x1b[1;36m╔══════════════════════════════════════╗\x1b[0m')
-    term.writeln('\x1b[1;36m║      Aitty AI Terminal v0.1.0       ║\x1b[0m')
-    term.writeln('\x1b[1;36m║   Claude API Powered SSH Assistant  ║\x1b[0m')
-    term.writeln('\x1b[1;36m╚══════════════════════════════════════╝\x1b[0m')
+    // Warning banner
+    term.writeln('\x1b[1;33m╔════════════════════════════════════════════════════╗\x1b[0m')
+    term.writeln('\x1b[1;33m║  ⚠ AI는 부정확한 정보를 제공할 수 있습니다.       ║\x1b[0m')
+    term.writeln('\x1b[33m║  실행 전 반드시 내용을 검토하세요                  ║\x1b[0m')
+    term.writeln('\x1b[1;33m╚════════════════════════════════════════════════════╝\x1b[0m')
     term.writeln('')
     term.writeln('Type \x1b[33mhelp\x1b[0m for available commands.')
     term.writeln('Type \x1b[33mconfig set api-key <KEY>\x1b[0m to get started.')

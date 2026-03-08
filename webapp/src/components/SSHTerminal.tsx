@@ -82,6 +82,26 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
     return () => stopPolling()
   }, [stopPolling])
 
+  const showBanner = (term: Terminal) => {
+    const C = '\x1b[36m'   // cyan
+    const D = '\x1b[2;36m' // dim cyan
+    const G = '\x1b[32m'   // green
+    const R = '\x1b[0m'    // reset
+    term.writeln('')
+    term.writeln(`${C} ____  _   _ ___ _   _ _   _    _    _   _     ____  ____${R}`)
+    term.writeln(`${C}/ ___|| | | |_ _| \\ | | | | |  / \\  | \\ | |   |  _ \\/ ___|${R}`)
+    term.writeln(`${C}\\___ \\| |_| || ||  \\| | |_| | / _ \\ |  \\| |   | | | \\___ \\${R}`)
+    term.writeln(`${C} ___) ||  _  || || |\\  |  _  |/ ___ \\| |\\  |   | |_| |___) |${R}`)
+    term.writeln(`${C}|____/ |_| |_|___|_| \\_|_| |_/_/   \\_\\_| \\_|   |____/|____/${R}`)
+    term.writeln('')
+    term.writeln(`${D}──────────────────────────────────────────────────────────────${R}`)
+    term.writeln(`${G}  SSH AI Terminal  │  Powered by Arti  │  WPF + WebView2${R}`)
+    term.writeln(`${D}──────────────────────────────────────────────────────────────${R}`)
+    term.writeln('')
+    term.writeln(`${D}  Enter connection details above and press Connect.${R}`)
+    term.writeln('')
+  }
+
   // Initialize xterm.js
   useEffect(() => {
     if (!terminalRef.current) return
@@ -107,9 +127,7 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
     termRef.current = term
     fitAddonRef.current = fitAddon
 
-    term.writeln('\x1b[1;32mSSH Terminal v0.1.0\x1b[0m')
-    term.writeln('Enter connection details above to connect.')
-    term.writeln('')
+    showBanner(term)
 
     // Forward all keystrokes to shell stream via ref (avoids stale closure)
     term.onData((data: string) => {
@@ -151,7 +169,9 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
 
       await connect(target)
 
-      termRef.current?.writeln(`\x1b[32mConnected to ${target.host}:${target.port} as ${target.username}\x1b[0m`)
+      // 배너 지우고 접속 정보 출력
+      termRef.current?.clear()
+      termRef.current?.writeln(`\x1b[32m✓ Connected to ${target.host}:${target.port} as ${target.username}\x1b[0m`)
       termRef.current?.writeln('')
 
       setShowConnectForm(false)
@@ -170,7 +190,11 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
     try {
       stopPolling()
       await disconnect()
-      termRef.current?.writeln('\r\n\x1b[33mDisconnected\x1b[0m')
+      // 배너 재표시
+      if (termRef.current) {
+        termRef.current.clear()
+        showBanner(termRef.current)
+      }
       setShowConnectForm(true)
       onDisconnect?.()
     } catch (error) {

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { config as configBridge } from '@bridge/ipcBridge'
 import { logger } from '@utils/logger'
 import { SSHTerminal } from '@components/SSHTerminal'
@@ -13,11 +13,18 @@ const DEFAULT_CONFIG = {
   sshConnections: [] as any[],
 }
 
+const SPLIT_MIN = 20  // 최소 패널 너비 %
+const SPLIT_MAX = 80  // 최대 패널 너비 %
+
 function App() {
   const [config, setConfig] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [sshConnection, setSshConnection] = useState<SSHConnection | undefined>()
   const [sshConnected, setSshConnected] = useState(false)
+  const [splitRatio, setSplitRatio] = useState(50)  // SSH 패널 너비 %
+
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const isDraggingRef = useRef(false)
 
   useEffect(() => {
     const initializeApp = async () => {
@@ -32,21 +39,49 @@ function App() {
         setIsLoading(false)
       }
     }
-
     initializeApp()
+  }, [])
+
+  // Drag resize handlers
+  const handleResizerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    isDraggingRef.current = true
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [])
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current || !layoutRef.current) return
+
+      const rect = layoutRef.current.getBoundingClientRect()
+      const offsetX = e.clientX - rect.left
+      const ratio = (offsetX / rect.width) * 100
+
+      setSplitRatio(Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, ratio)))
+    }
+
+    const onMouseUp = () => {
+      if (!isDraggingRef.current) return
+      isDraggingRef.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
   }, [])
 
   const handleSshConnect = useCallback((conn: SSHConnection) => {
     setSshConnection(conn)
   }, [])
 
-  const handleConnected = useCallback(() => {
-    setSshConnected(true)
-  }, [])
-
-  const handleDisconnected = useCallback(() => {
-    setSshConnected(false)
-  }, [])
+  const handleConnected = useCallback(() => setSshConnected(true), [])
+  const handleDisconnected = useCallback(() => setSshConnected(false), [])
 
   if (isLoading) {
     return (
@@ -64,8 +99,8 @@ function App() {
         <p className="subtitle">SSH + AI Terminal for Windows</p>
       </header>
 
-      <div className="app-layout">
-        <div className="terminal-panel ssh-panel">
+      <div className="app-layout" ref={layoutRef}>
+        <div className="terminal-panel ssh-panel" style={{ width: `${splitRatio}%` }}>
           <SSHTerminal
             connection={sshConnection}
             onRequestConnect={handleSshConnect}
@@ -74,7 +109,13 @@ function App() {
           />
         </div>
 
-        <div className="terminal-panel ai-panel">
+        <div
+          className="panel-resizer"
+          onMouseDown={handleResizerMouseDown}
+          title="Drag to resize"
+        />
+
+        <div className="terminal-panel ai-panel" style={{ flex: 1 }}>
           <AITerminal />
         </div>
       </div>
