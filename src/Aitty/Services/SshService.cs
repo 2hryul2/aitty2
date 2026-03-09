@@ -1,4 +1,5 @@
 ﻿using System.IO;
+using System.Text.RegularExpressions;
 using Renci.SshNet;
 using Aitty.Models;
 
@@ -7,10 +8,19 @@ namespace Aitty.Services;
 public class SshService : IDisposable
 {
     private const int MaxRecentLines = 200;
+    private const int MaxLastOutputLines = 100;
+
+    // ANSI 이스케이프 코드 제거용 정규식
+    private static readonly Regex AnsiRegex = new(@"\x1B\[[0-9;?]*[A-Za-z]|\x1B[()][A-Z0-9]", RegexOptions.Compiled);
+
     private SshClient? _client;
     private ShellStream? _shellStream;
     private readonly SshConnectionState _state = new();
     private readonly Queue<string> _recentLines = new();
+
+    // 마지막 명령어 이후 출력만 수집하는 버퍼
+    private readonly List<string> _lastOutputBuffer = new();
+    private bool _collectingOutput = false;
 
     public SshConnectionState State => _state;
     public bool IsConnected => _client?.IsConnected == true;
@@ -51,6 +61,8 @@ public class SshService : IDisposable
             });
 
             _recentLines.Clear();
+            _lastOutputBuffer.Clear();
+            _collectingOutput = false;
             _state.IsConnected = true;
             _state.IsConnecting = false;
             _state.Connection = connection;
@@ -120,6 +132,12 @@ public class SshService : IDisposable
         {
             Remember(data.Replace("\r", string.Empty));
         }
+        // Enter 키(\r) 감지 → 새 명령어 시작: 마지막 출력 버퍼 초기화 후 수집 시작
+        if (data.Contains('\r'))
+        {
+            _lastOutputBuffer.Clear();
+            _collectingOutput = true;
+        }
     }
 
     public string? ReadFromShell()
@@ -129,7 +147,30 @@ public class SshService : IDisposable
 
         var output = _shellStream.Read();
         Remember(output);
+
+        // 명령어 실행 후 출력을 마지막 출력 버퍼에 수집 (ANSI 코드 제거)
+        if (_collectingOutput && !string.IsNullOrEmpty(output))
+        {
+            var clean = AnsiRegex.Replace(output, string.Empty);
+            foreach (var line in clean.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            {
+                var trimmed = line.Trim();
+                if (!string.IsNullOrWhiteSpace(trimmed))
+                {
+                    _lastOutputBuffer.Add(trimmed);
+                    if (_lastOutputBuffer.Count > MaxLastOutputLines)
+                        _lastOutputBuffer.RemoveAt(0);
+                }
+            }
+        }
+
         return output;
+    }
+
+    /// <summary>마지막 명령어 실행 이후 SSH 터미널에 출력된 내용만 반환</summary>
+    public string GetLastCommandOutput()
+    {
+        return string.Join("\n", _lastOutputBuffer);
     }
 
     public string GetRecentOutput(int lineCount = 80)

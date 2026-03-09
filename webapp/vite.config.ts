@@ -11,9 +11,10 @@ export default defineConfig({
   },
   build: {
     ssr: false,
-    emptyOutDir: false,
-    // External node modules that should not be bundled
+    emptyOutDir: true,   // 빌드마다 dist 클린 (구 파일 제거)
+    crossOriginLoading: false,  // WebView2 virtual host에서 crossorigin 속성 제거
     rollupOptions: {
+      // Node.js 전용 모듈은 번들 제외 (브라우저 환경에서 불필요)
       external: ['fs', 'path', 'os', 'node-ssh', 'node-pty', 'ssh2'],
       output: {
         globals: {},

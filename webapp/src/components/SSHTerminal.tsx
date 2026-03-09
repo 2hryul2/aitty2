@@ -29,9 +29,9 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
   const shellWriteRef = useRef(shellWrite)
   const [showConnectForm, setShowConnectForm] = useState(true)
   const [formData, setFormData] = useState({
-    host: '127.0.0.1',
+    host: '172.16.1.103',
     port: '22',
-    username: '',
+    username: 'ds',
     password: '',
     privateKey: '',
   })
@@ -95,7 +95,7 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
     term.writeln(`${C}|____/ |_| |_|___|_| \\_|_| |_/_/   \\_\\_| \\_|   |____/|____/${R}`)
     term.writeln('')
     term.writeln(`${D}──────────────────────────────────────────────────────────────${R}`)
-    term.writeln(`${G}  SSH AI Terminal  │  Powered by Arti  │  WPF + WebView2${R}`)
+    term.writeln(`${G}  SSH AI Terminal  │  Powered by Arti ${R}`)
     term.writeln(`${D}──────────────────────────────────────────────────────────────${R}`)
     term.writeln('')
     term.writeln(`${D}  Enter connection details above and press Connect.${R}`)
@@ -107,16 +107,34 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
     if (!terminalRef.current) return
 
     const term = new Terminal({
-      fontSize: 12,
+      fontSize: 13,
       fontFamily: 'Consolas, "Courier New", monospace',
       lineHeight: 1.2,
       theme: {
         background: '#000000',
-        foreground: '#00FF00',
+        foreground: '#cccccc',
+        cursor: '#cccccc',
+        black: '#000000',
+        red: '#cc0000',
+        green: '#4e9a06',
+        yellow: '#c4a000',
+        blue: '#3465a4',
+        magenta: '#75507b',
+        cyan: '#06989a',
+        white: '#d3d7cf',
+        brightBlack: '#555753',
+        brightRed: '#ef2929',
+        brightGreen: '#8ae234',
+        brightYellow: '#fce94f',
+        brightBlue: '#729fcf',
+        brightMagenta: '#ad7fa8',
+        brightCyan: '#34e2e2',
+        brightWhite: '#eeeeec',
       },
       cols: 120,
       rows: 40,
       cursorBlink: true,
+      scrollback: 5000,
     })
 
     const fitAddon = new FitAddon()

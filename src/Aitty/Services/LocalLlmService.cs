@@ -6,12 +6,20 @@ using Aitty.Models;
 
 namespace Aitty.Services;
 
-public class LocalLlmService : IDisposable
+/// <summary>
+/// Ollama /api/generate 기반 LLM 서비스.
+/// /api/chat 대신 /api/generate를 사용해 구버전 Ollama 호환성 확보.
+/// context 토큰으로 대화 이력 유지.
+/// </summary>
+public class LocalLlmService : IAiService
 {
     private readonly HttpClient _httpClient;
     private readonly List<AiChatMessage> _conversationHistory = new();
 
-    private string _baseUrl = "http://localhost:11434";
+    // Ollama /api/generate context 토큰 (대화 연속성 유지)
+    private long[]? _context;
+
+    private string _baseUrl = "http://172.16.1.103:11434";
     private string _model = "qwen2.5-coder:7b";
     private string? _systemPrompt = "You are a local Linux SSH assistant. Analyze terminal output, explain issues, and suggest safe next commands. Prefer minimal-risk commands first.";
 
@@ -23,32 +31,32 @@ public class LocalLlmService : IDisposable
         };
     }
 
+    public string ProviderName => "ollama";
     public bool IsConfigured => true;
     public string CurrentModel => _model;
+    public string CurrentBaseUrl => _baseUrl;
     public IReadOnlyList<AiChatMessage> History => _conversationHistory.AsReadOnly();
+
+    public void SetBaseUrl(string url)
+    {
+        if (!string.IsNullOrWhiteSpace(url))
+            _baseUrl = url.TrimEnd('/');
+    }
 
     public void Configure(AiConfig config)
     {
         if (!string.IsNullOrWhiteSpace(config.Model))
-        {
             _model = config.Model;
-        }
 
         if (!string.IsNullOrWhiteSpace(config.SystemPrompt))
-        {
             _systemPrompt = config.SystemPrompt;
-        }
     }
 
-    public void SetModel(string model)
-    {
-        _model = model;
-    }
+    public void SetModel(string model) => _model = model;
 
-    public void SetSystemPrompt(string? systemPrompt)
-    {
-        _systemPrompt = systemPrompt;
-    }
+    public void SetSystemPrompt(string? systemPrompt) => _systemPrompt = systemPrompt;
+
+    // ── 모델 목록 ─────────────────────────────────────────── //
 
     public async Task<List<string>> ListModelsAsync(CancellationToken ct = default)
     {
@@ -67,42 +75,41 @@ public class LocalLlmService : IDisposable
                 {
                     var value = name.GetString();
                     if (!string.IsNullOrWhiteSpace(value))
-                    {
                         models.Add(value);
-                    }
                 }
             }
         }
-
         return models;
     }
 
     public async Task<bool> IsEngineAvailableAsync(CancellationToken ct = default)
     {
-        try
-        {
-            _ = await ListModelsAsync(ct);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
+        try { _ = await ListModelsAsync(ct); return true; }
+        catch { return false; }
     }
+
+    // ── 메시지 전송 (비스트리밍) ──────────────────────────── //
 
     public async Task<AiChatResponse> SendMessageAsync(string userMessage, CancellationToken ct = default)
     {
         _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
 
-        var request = BuildChatRequest(userMessage, includeHistory: true, stream: false);
-        var json = JsonSerializer.Serialize(request);
+        var requestBody = BuildGenerateRequest(userMessage, stream: false);
+        var json = JsonSerializer.Serialize(requestBody);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
-        using var response = await _httpClient.PostAsync($"{_baseUrl}/api/chat", content, ct);
+        using var response = await _httpClient.PostAsync($"{_baseUrl}/api/generate", content, ct);
         var responseText = await response.Content.ReadAsStringAsync(ct);
         response.EnsureSuccessStatusCode();
 
         using var doc = JsonDocument.Parse(responseText);
-        var message = doc.RootElement.GetProperty("message").GetProperty("content").GetString() ?? string.Empty;
+
+        // context 토큰 저장
+        if (doc.RootElement.TryGetProperty("context", out var ctxElement))
+            _context = ctxElement.EnumerateArray().Select(x => x.GetInt64()).ToArray();
+
+        var message = doc.RootElement.TryGetProperty("response", out var r)
+            ? r.GetString() ?? string.Empty
+            : string.Empty;
 
         _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = message });
 
@@ -115,13 +122,15 @@ public class LocalLlmService : IDisposable
         };
     }
 
+    // ── 스트리밍 메시지 전송 ──────────────────────────────── //
+
     public async Task<string> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default)
     {
         _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
 
-        var request = BuildChatRequest(userMessage, includeHistory: true, stream: true);
-        var json = JsonSerializer.Serialize(request);
-        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/chat")
+        var requestBody = BuildGenerateRequest(userMessage, stream: true);
+        var json = JsonSerializer.Serialize(requestBody);
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/generate")
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
@@ -136,16 +145,14 @@ public class LocalLlmService : IDisposable
         while (!reader.EndOfStream && !ct.IsCancellationRequested)
         {
             var line = await reader.ReadLineAsync(ct);
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
+            if (string.IsNullOrWhiteSpace(line)) continue;
 
             using var doc = JsonDocument.Parse(line);
-            if (doc.RootElement.TryGetProperty("message", out var message) &&
-                message.TryGetProperty("content", out var contentElement))
+
+            // 청크 텍스트 수집
+            if (doc.RootElement.TryGetProperty("response", out var responseChunk))
             {
-                var chunk = contentElement.GetString() ?? string.Empty;
+                var chunk = responseChunk.GetString() ?? string.Empty;
                 if (chunk.Length > 0)
                 {
                     builder.Append(chunk);
@@ -153,8 +160,11 @@ public class LocalLlmService : IDisposable
                 }
             }
 
-            if (doc.RootElement.TryGetProperty("done", out var doneElement) && doneElement.GetBoolean())
+            // 완료 시 context 토큰 저장
+            if (doc.RootElement.TryGetProperty("done", out var doneEl) && doneEl.GetBoolean())
             {
+                if (doc.RootElement.TryGetProperty("context", out var ctxEl))
+                    _context = ctxEl.EnumerateArray().Select(x => x.GetInt64()).ToArray();
                 break;
             }
         }
@@ -163,6 +173,8 @@ public class LocalLlmService : IDisposable
         _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = fullContent });
         return fullContent;
     }
+
+    // ── SSH 분석 / 명령 제안 ──────────────────────────────── //
 
     public async Task<string> AnalyzeSshOutputAsync(string recentOutput, CancellationToken ct = default)
     {
@@ -178,9 +190,12 @@ public class LocalLlmService : IDisposable
         return response.Content;
     }
 
+    // ── 이력 초기화 ───────────────────────────────────────── //
+
     public void ClearHistory()
     {
         _conversationHistory.Clear();
+        _context = null;    // context 토큰도 리셋 → 새 대화 시작
     }
 
     public void Dispose()
@@ -189,31 +204,18 @@ public class LocalLlmService : IDisposable
         GC.SuppressFinalize(this);
     }
 
-    private object BuildChatRequest(string userMessage, bool includeHistory, bool stream)
-    {
-        var messages = new List<object>();
-        if (includeHistory)
-        {
-            foreach (var item in _conversationHistory)
-            {
-                messages.Add(new { role = item.Role, content = item.Content });
-            }
-        }
-        else
-        {
-            messages.Add(new { role = "user", content = userMessage });
-        }
+    // ── 요청 빌더 ─────────────────────────────────────────── //
 
+    private object BuildGenerateRequest(string prompt, bool stream)
+    {
         return new
         {
             model = _model,
+            prompt,
             stream,
-            messages,
-            options = new
-            {
-                temperature = 0.2
-            },
-            system = _systemPrompt
+            system = _systemPrompt,
+            context = _context,         // null이면 새 대화, 있으면 이전 대화 이어서
+            options = new { temperature = 0.2 }
         };
     }
 }

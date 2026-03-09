@@ -121,7 +121,7 @@ function App() {
       </div>
 
       <footer className="app-footer">
-        <p>© 2026 Aitty | WPF + WebView2 | Claude API</p>
+        <p>© 2026 Aitty | 신한DS AX본부</p>
       </footer>
     </div>
   )

@@ -34,7 +34,8 @@ function init() {
     try {
       const msg = typeof e.data === 'string' ? JSON.parse(e.data) : e.data
 
-      if (msg.type === 'ai:stream:chunk') {
+      // ai:stream:chunk / ai:ssh:analyze:chunk / ai:ssh:suggest:chunk 통합 처리
+      if (msg.type.endsWith(':chunk')) {
         const listener = streamListeners.get(msg.id)
         if (listener && msg.payload?.chunk) {
           listener(msg.payload.chunk)
@@ -118,6 +119,20 @@ export interface AiState {
   model: string
   historyCount: number
   engine: string
+  provider: string
+  baseUrl?: string
+}
+
+export interface AiProvider {
+  id: string
+  name: string
+  status: string
+  requiresApiKey: boolean
+}
+
+export interface AiProvidersResponse {
+  providers: AiProvider[]
+  active: string
 }
 
 export const ai = {
@@ -144,12 +159,44 @@ export const ai = {
   configure: (config: { model?: string; systemPrompt?: string; maxTokens?: number }) => invoke<{ success: boolean }>('ai:configure', config),
   setModel: (model: string) => invoke<{ success: boolean; model: string }>('ai:set-model', { model }),
   setSystem: (systemPrompt: string | null) => invoke<{ success: boolean }>('ai:set-system', { systemPrompt }),
+  setEndpoint: (url: string) => invoke<{ success: boolean; url: string }>('ai:set-endpoint', { url }),
   state: () => invoke<AiState>('ai:state'),
   history: () => invoke<{ messages: Array<{ role: string; content: string }> }>('ai:history'),
   clear: () => invoke<{ success: boolean }>('ai:clear'),
   models: () => invoke<{ models: string[] }>('ai:models'),
-  analyzeLast: () => invoke<{ content: string }>('ai:ssh:analyze'),
-  suggestCommand: () => invoke<{ content: string }>('ai:ssh:suggest-command'),
+  // ── 제공자 관리 ─────────────────────────────── //
+  providers: () => invoke<AiProvidersResponse>('ai:providers'),
+  setProvider: (provider: string) => invoke<{ success: boolean; provider: string }>('ai:set-provider', { provider }),
+  setApiKey: (provider: string, apiKey: string) => invoke<{ success: boolean; provider: string; hasKey: boolean }>('ai:set-apikey', { provider, apiKey }),
+  // 스트리밍으로 전환: 30초 타임아웃 → 120초 + 청크 실시간 출력
+  analyzeLast: (onChunk?: StreamChunkHandler) => {
+    if (!isWebView2()) return Promise.reject(new Error('WebView2 not available'))
+    return new Promise<{ content: string }>((resolve, reject) => {
+      const id = crypto.randomUUID()
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        streamListeners.delete(id)
+        reject(new Error('IPC timeout: ai:ssh:analyze'))
+      }, STREAM_TIMEOUT)
+      pending.set(id, { resolve, reject, timer })
+      if (onChunk) streamListeners.set(id, onChunk)
+      window.chrome!.webview!.postMessage({ id, type: 'ai:ssh:analyze', payload: {} })
+    })
+  },
+  suggestCommand: (onChunk?: StreamChunkHandler) => {
+    if (!isWebView2()) return Promise.reject(new Error('WebView2 not available'))
+    return new Promise<{ content: string }>((resolve, reject) => {
+      const id = crypto.randomUUID()
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        streamListeners.delete(id)
+        reject(new Error('IPC timeout: ai:ssh:suggest-command'))
+      }, STREAM_TIMEOUT)
+      pending.set(id, { resolve, reject, timer })
+      if (onChunk) streamListeners.set(id, onChunk)
+      window.chrome!.webview!.postMessage({ id, type: 'ai:ssh:suggest-command', payload: {} })
+    })
+  },
 }
 
 export const app = {

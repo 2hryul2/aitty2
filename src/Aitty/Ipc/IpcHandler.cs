@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Web.WebView2.Wpf;
 using Microsoft.Web.WebView2.Core;
@@ -19,16 +19,16 @@ public class IpcHandler
     private readonly SshService _sshService;
     private readonly ConfigService _configService;
     private readonly KeyManagerService _keyManagerService;
-    private readonly LocalLlmService _localLlmService;
+    private readonly AiServiceManager _aiManager;
     private CancellationTokenSource? _streamingCts;
 
-    public IpcHandler(WebView2 webView, SshService sshService, ConfigService configService, KeyManagerService keyManagerService, LocalLlmService localLlmService)
+    public IpcHandler(WebView2 webView, SshService sshService, ConfigService configService, KeyManagerService keyManagerService, AiServiceManager aiManager)
     {
         _webView = webView;
         _sshService = sshService;
         _configService = configService;
         _keyManagerService = keyManagerService;
-        _localLlmService = localLlmService;
+        _aiManager = aiManager;
     }
 
     public void Register()
@@ -60,40 +60,53 @@ public class IpcHandler
     {
         return msg.Type switch
         {
-            "ssh:connect" => await HandleSshConnect(msg.Payload),
-            "ssh:disconnect" => HandleSshDisconnect(),
-            "ssh:exec" => await HandleSshExec(msg.Payload),
-            "ssh:test" => await HandleSshTest(),
-            "ssh:state" => HandleSshState(),
-            "ssh:shell:write" => HandleSshShellWrite(msg.Payload),
-            "ssh:shell:read" => HandleSshShellRead(),
+            "ssh:connect"              => await HandleSshConnect(msg.Payload),
+            "ssh:disconnect"           => HandleSshDisconnect(),
+            "ssh:exec"                 => await HandleSshExec(msg.Payload),
+            "ssh:test"                 => await HandleSshTest(),
+            "ssh:state"                => HandleSshState(),
+            "ssh:shell:write"          => HandleSshShellWrite(msg.Payload),
+            "ssh:shell:read"           => HandleSshShellRead(),
 
-            "config:load" => await HandleConfigLoad(),
-            "config:save" => await HandleConfigSave(msg.Payload),
-            "config:connections:add" => await HandleConfigAddConnection(msg.Payload),
-            "config:connections:remove" => await HandleConfigRemoveConnection(msg.Payload),
+            "config:load"              => await HandleConfigLoad(),
+            "config:save"              => await HandleConfigSave(msg.Payload),
+            "config:connections:add"   => await HandleConfigAddConnection(msg.Payload),
+            "config:connections:remove"=> await HandleConfigRemoveConnection(msg.Payload),
 
-            "keys:list" => await HandleKeysList(),
-            "keys:validate" => await HandleKeysValidate(msg.Payload),
-            "keys:ssh-config" => await HandleKeysSshConfig(),
+            "keys:list"                => await HandleKeysList(),
+            "keys:validate"            => await HandleKeysValidate(msg.Payload),
+            "keys:ssh-config"          => await HandleKeysSshConfig(),
 
-            "ai:send" => await HandleAiSend(msg.Payload),
-            "ai:stream" => await HandleAiStream(msg),
-            "ai:stream:cancel" => HandleAiStreamCancel(),
-            "ai:configure" => HandleAiConfigure(msg.Payload),
-            "ai:set-model" => HandleAiSetModel(msg.Payload),
-            "ai:set-system" => HandleAiSetSystem(msg.Payload),
-            "ai:state" => await HandleAiState(),
-            "ai:history" => HandleAiHistory(),
-            "ai:clear" => HandleAiClear(),
-            "ai:models" => await HandleAiModels(),
-            "ai:ssh:analyze" => await HandleAiAnalyzeSsh(),
-            "ai:ssh:suggest-command" => await HandleAiSuggestCommand(),
+            // ── AI 공통 ──────────────────────────────────── //
+            "ai:send"                  => await HandleAiSend(msg.Payload),
+            "ai:stream"                => await HandleAiStream(msg),
+            "ai:stream:cancel"         => HandleAiStreamCancel(),
+            "ai:configure"             => HandleAiConfigure(msg.Payload),
+            "ai:set-model"             => HandleAiSetModel(msg.Payload),
+            "ai:set-system"            => HandleAiSetSystem(msg.Payload),
+            "ai:state"                 => await HandleAiState(),
+            "ai:history"               => HandleAiHistory(),
+            "ai:clear"                 => HandleAiClear(),
+            "ai:models"                => await HandleAiModels(),
 
-            "app:version" => GetAppVersion(),
-            _ => throw new NotSupportedException($"Unknown IPC type: {msg.Type}")
+            // ── AI 제공자 관리 ────────────────────────────── //
+            "ai:providers"             => HandleAiProviders(),
+            "ai:set-provider"          => HandleAiSetProvider(msg.Payload),
+            "ai:set-apikey"            => HandleAiSetApiKey(msg.Payload),
+
+            // ── Ollama 전용 ──────────────────────────────── //
+            "ai:set-endpoint"          => HandleAiSetEndpoint(msg.Payload),
+
+            // ── SSH 분석 ─────────────────────────────────── //
+            "ai:ssh:analyze"           => await HandleAiAnalyzeSsh(msg),
+            "ai:ssh:suggest-command"   => await HandleAiSuggestCommand(msg),
+
+            "app:version"              => GetAppVersion(),
+            _                          => throw new NotSupportedException($"Unknown IPC type: {msg.Type}")
         };
     }
+
+    // ── SSH ────────────────────────────────────────────────── //
 
     private async Task<object> HandleSshConnect(object? payload)
     {
@@ -102,11 +115,7 @@ public class IpcHandler
         return new { success };
     }
 
-    private object HandleSshDisconnect()
-    {
-        _sshService.Disconnect();
-        return new { success = true };
-    }
+    private object HandleSshDisconnect() { _sshService.Disconnect(); return new { success = true }; }
 
     private async Task<object> HandleSshExec(object? payload)
     {
@@ -115,11 +124,7 @@ public class IpcHandler
         return new { output };
     }
 
-    private async Task<object> HandleSshTest()
-    {
-        var ok = await _sshService.TestAsync();
-        return new { success = ok };
-    }
+    private async Task<object> HandleSshTest() => new { success = await _sshService.TestAsync() };
 
     private object HandleSshState()
     {
@@ -127,17 +132,10 @@ public class IpcHandler
         return new { isConnected = _sshService.IsConnected, isConnecting = state.IsConnecting, error = state.Error, host = state.Connection?.Host, connectionTime = state.ConnectionTime?.ToString("o") };
     }
 
-    private object HandleSshShellWrite(object? payload)
-    {
-        var data = DeserializePayload<ShellWritePayload>(payload);
-        _sshService.WriteToShell(data.Data);
-        return new { success = true };
-    }
+    private object HandleSshShellWrite(object? payload) { _sshService.WriteToShell(DeserializePayload<ShellWritePayload>(payload).Data); return new { success = true }; }
+    private object HandleSshShellRead() => new { data = _sshService.ReadFromShell() };
 
-    private object HandleSshShellRead()
-    {
-        return new { data = _sshService.ReadFromShell() };
-    }
+    // ── Config / Keys ──────────────────────────────────────── //
 
     private async Task<object> HandleConfigLoad() => await _configService.LoadAsync();
     private async Task<object> HandleConfigSave(object? payload) { await _configService.SaveAsync(DeserializePayload<AppConfig>(payload)); return new { success = true }; }
@@ -148,10 +146,12 @@ public class IpcHandler
     private async Task<object> HandleKeysValidate(object? payload) { var valid = await _keyManagerService.IsValidKeyFileAsync(DeserializePayload<KeyPathPayload>(payload).Path); return new { valid }; }
     private async Task<object> HandleKeysSshConfig() => await _keyManagerService.ReadSshConfigAsync();
 
+    // ── AI 공통 ────────────────────────────────────────────── //
+
     private async Task<object> HandleAiSend(object? payload)
     {
         var data = DeserializePayload<AiChatRequest>(payload);
-        var response = await _localLlmService.SendMessageAsync(data.Message);
+        var response = await _aiManager.Active.SendMessageAsync(data.Message);
         return new { content = response.Content, model = response.Model, inputTokens = 0, outputTokens = 0 };
     }
 
@@ -160,73 +160,124 @@ public class IpcHandler
         var data = DeserializePayload<AiChatRequest>(msg.Payload);
         _streamingCts = new CancellationTokenSource();
 
-        var fullContent = await _localLlmService.SendStreamingAsync(data.Message, chunk =>
+        var fullContent = await _aiManager.Active.SendStreamingAsync(data.Message, chunk =>
         {
             var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:stream:chunk", Payload = new { chunk } };
-            var chunkJson = JsonSerializer.Serialize(chunkResponse, JsonOptions);
-            _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(chunkJson));
+            _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
         }, _streamingCts.Token);
 
         return new { content = fullContent, done = true };
     }
 
-    private object HandleAiStreamCancel()
-    {
-        _streamingCts?.Cancel();
-        return new { success = true };
-    }
+    private object HandleAiStreamCancel() { _streamingCts?.Cancel(); return new { success = true }; }
 
     private object HandleAiConfigure(object? payload)
     {
-        _localLlmService.Configure(DeserializePayload<AiConfig>(payload));
+        var cfg = DeserializePayload<AiConfig>(payload);
+        if (!string.IsNullOrWhiteSpace(cfg.Model)) _aiManager.Active.SetModel(cfg.Model);
+        if (!string.IsNullOrWhiteSpace(cfg.SystemPrompt)) _aiManager.Active.SetSystemPrompt(cfg.SystemPrompt);
         return new { success = true };
     }
 
     private object HandleAiSetModel(object? payload)
     {
         var model = DeserializePayload<ModelPayload>(payload).Model;
-        _localLlmService.SetModel(model);
+        _aiManager.Active.SetModel(model);
         return new { success = true, model };
     }
 
     private object HandleAiSetSystem(object? payload)
     {
-        _localLlmService.SetSystemPrompt(DeserializePayload<SystemPromptPayload>(payload).SystemPrompt);
+        _aiManager.Active.SetSystemPrompt(DeserializePayload<SystemPromptPayload>(payload).SystemPrompt);
         return new { success = true };
     }
 
     private async Task<object> HandleAiState()
     {
-        return new { isConfigured = await _localLlmService.IsEngineAvailableAsync(), model = _localLlmService.CurrentModel, historyCount = _localLlmService.History.Count, engine = "ollama" };
+        var svc = _aiManager.Active;
+        var isConfigured = await svc.IsEngineAvailableAsync();
+        var baseUrl = svc is LocalLlmService ollama ? ollama.CurrentBaseUrl : string.Empty;
+        return new
+        {
+            isConfigured,
+            model = svc.CurrentModel,
+            historyCount = svc.History.Count,
+            engine = svc.ProviderName,
+            provider = _aiManager.ActiveProvider,
+            baseUrl
+        };
     }
 
-    private object HandleAiHistory()
-    {
-        return new { messages = _localLlmService.History.Select(m => new { m.Role, m.Content }).ToList() };
-    }
+    private object HandleAiHistory() => new { messages = _aiManager.Active.History.Select(m => new { m.Role, m.Content }).ToList() };
 
-    private object HandleAiClear()
-    {
-        _localLlmService.ClearHistory();
-        return new { success = true };
-    }
+    private object HandleAiClear() { _aiManager.Active.ClearHistory(); return new { success = true }; }
 
     private async Task<object> HandleAiModels()
     {
-        var models = await _localLlmService.ListModelsAsync();
+        var models = await _aiManager.Active.ListModelsAsync();
         return new { models };
     }
 
-    private async Task<object> HandleAiAnalyzeSsh()
+    // ── AI 제공자 관리 ──────────────────────────────────────── //
+
+    private object HandleAiProviders() => new { providers = _aiManager.GetProviders(), active = _aiManager.ActiveProvider };
+
+    private object HandleAiSetProvider(object? payload)
     {
-        var content = await _localLlmService.AnalyzeSshOutputAsync(_sshService.GetRecentOutput());
-        return new { content };
+        var data = DeserializePayload<ProviderPayload>(payload);
+        _aiManager.SwitchProvider(data.Provider);
+        return new { success = true, provider = _aiManager.ActiveProvider };
     }
 
-    private async Task<object> HandleAiSuggestCommand()
+    private object HandleAiSetApiKey(object? payload)
     {
-        var content = await _localLlmService.SuggestCommandAsync(_sshService.GetRecentOutput());
-        return new { content };
+        var data = DeserializePayload<ApiKeyPayload>(payload);
+        _aiManager.SetApiKey(data.Provider, data.ApiKey);
+        return new { success = true, provider = data.Provider, hasKey = _aiManager.HasApiKey(data.Provider) };
+    }
+
+    // ── Ollama 전용 ────────────────────────────────────────── //
+
+    private object HandleAiSetEndpoint(object? payload)
+    {
+        _aiManager.Ollama.SetBaseUrl(DeserializePayload<EndpointPayload>(payload).Url);
+        return new { success = true, url = _aiManager.Ollama.CurrentBaseUrl };
+    }
+
+    // ── SSH 분석 ────────────────────────────────────────────── //
+
+    private async Task<object> HandleAiAnalyzeSsh(IpcMessage msg)
+    {
+        var lastOutput = _sshService.GetLastCommandOutput();
+        if (string.IsNullOrWhiteSpace(lastOutput))
+            return new { content = string.Empty };
+
+        var prompt = $"SSH last command output:\n{lastOutput}\n\nAnalyze the output, explain issues if any, and suggest the next safe action.";
+
+        var fullContent = await _aiManager.Active.SendStreamingAsync(prompt, chunk =>
+        {
+            var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:ssh:analyze:chunk", Payload = new { chunk } };
+            _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
+        });
+
+        return new { content = fullContent };
+    }
+
+    private async Task<object> HandleAiSuggestCommand(IpcMessage msg)
+    {
+        var recentOutput = _sshService.GetRecentOutput();
+        if (string.IsNullOrWhiteSpace(recentOutput))
+            return new { content = string.Empty };
+
+        var prompt = $"Recent SSH output:\n{recentOutput}\n\nSuggest one safe next shell command only, followed by a short reason.";
+
+        var fullContent = await _aiManager.Active.SendStreamingAsync(prompt, chunk =>
+        {
+            var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:ssh:suggest:chunk", Payload = new { chunk } };
+            _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
+        });
+
+        return new { content = fullContent };
     }
 
     private static object GetAppVersion()
@@ -238,31 +289,26 @@ public class IpcHandler
     private static T DeserializePayload<T>(object? payload) where T : class
     {
         if (payload is JsonElement element)
-        {
-            return JsonSerializer.Deserialize<T>(element.GetRawText(), JsonOptions) ?? throw new ArgumentException($"Failed to deserialize payload to {typeof(T).Name}");
-        }
+            return JsonSerializer.Deserialize<T>(element.GetRawText(), JsonOptions) ?? throw new ArgumentException($"Failed to deserialize {typeof(T).Name}");
 
         var json = JsonSerializer.Serialize(payload, JsonOptions);
-        return JsonSerializer.Deserialize<T>(json, JsonOptions) ?? throw new ArgumentException($"Failed to deserialize payload to {typeof(T).Name}");
+        return JsonSerializer.Deserialize<T>(json, JsonOptions) ?? throw new ArgumentException($"Failed to deserialize {typeof(T).Name}");
     }
 
     private static string TryExtractId(string json)
     {
-        try
-        {
-            var node = JsonNode.Parse(json);
-            return node?["id"]?.GetValue<string>() ?? "unknown";
-        }
-        catch
-        {
-            return "unknown";
-        }
+        try { return JsonNode.Parse(json)?["id"]?.GetValue<string>() ?? "unknown"; }
+        catch { return "unknown"; }
     }
 }
 
-internal class CommandPayload { public string Command { get; set; } = string.Empty; }
-internal class ShellWritePayload { public string Data { get; set; } = string.Empty; }
-internal class HostPayload { public string Host { get; set; } = string.Empty; }
-internal class KeyPathPayload { public string Path { get; set; } = string.Empty; }
-internal class ModelPayload { public string Model { get; set; } = string.Empty; }
+// ── Payload DTOs ──────────────────────────────────────────── //
+internal class CommandPayload      { public string Command    { get; set; } = string.Empty; }
+internal class ShellWritePayload   { public string Data       { get; set; } = string.Empty; }
+internal class HostPayload         { public string Host       { get; set; } = string.Empty; }
+internal class KeyPathPayload      { public string Path       { get; set; } = string.Empty; }
+internal class ModelPayload        { public string Model      { get; set; } = string.Empty; }
 internal class SystemPromptPayload { public string? SystemPrompt { get; set; } }
+internal class EndpointPayload     { public string Url        { get; set; } = string.Empty; }
+internal class ProviderPayload     { public string Provider   { get; set; } = string.Empty; }
+internal class ApiKeyPayload       { public string Provider   { get; set; } = string.Empty; public string ApiKey { get; set; } = string.Empty; }

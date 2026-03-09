@@ -42,3 +42,12 @@ out/
 # ─── Logs ───────────────────────────────────────────
 logs/
 *.log
+
+# --- Build artifacts ---
+publish/
+aitty.zip
+src/Aitty/wwwroot/
+
+# --- Temp scripts ---
+build.ps1
+check*.ps1

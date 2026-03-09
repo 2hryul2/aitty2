@@ -1,14 +1,14 @@
-﻿import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 import { useTerminalResize } from '@hooks/useTerminalResize'
-import { ai } from '@bridge/ipcBridge'
+import { ai, type AiProvider } from '@bridge/ipcBridge'
 import { logger } from '@utils/logger'
 
 const DEFAULT_MODEL = 'qwen2.5-coder:7b'
 const DEFAULT_SYSTEM_PROMPT = 'You are a local Linux SSH assistant. Analyze terminal output, explain issues, and suggest safe next commands. Prefer minimal-risk commands first.'
-const OLLAMA_ENDPOINT = 'http://localhost:11434'
+const DEFAULT_ENDPOINT = 'http://172.16.1.103:11434'
 
 function isWebView2(): boolean {
   return !!window.chrome?.webview
@@ -21,6 +21,9 @@ export function AITerminal() {
   const inputBufferRef = useRef('')
   const isProcessingRef = useRef(false)
 
+  // endpointUrl을 ref로도 관리 → loadEngineState deps에서 제거
+  const endpointUrlRef = useRef(DEFAULT_ENDPOINT)
+
   const [isConfigured, setIsConfigured] = useState(false)
   const [currentModel, setCurrentModel] = useState(DEFAULT_MODEL)
   const [isStreaming, setIsStreaming] = useState(false)
@@ -28,8 +31,14 @@ export function AITerminal() {
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [isSettingsOpen, setIsSettingsOpen] = useState(true)
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT)
+  const [endpointUrl, setEndpointUrl] = useState(DEFAULT_ENDPOINT)
   const [statusMessage, setStatusMessage] = useState('Not checked')
   const [isBusy, setIsBusy] = useState(false)
+
+  // ── 제공자 관련 상태 ────────────────────────────────────────
+  const [activeProvider, setActiveProvider] = useState<string>('ollama')
+  const [apiKey, setApiKey] = useState('')
+  const [providers, setProviders] = useState<AiProvider[]>([])
 
   const resizeRef = useTerminalResize(() => {
     if (fitAddonRef.current && termRef.current) {
@@ -45,47 +54,174 @@ export function AITerminal() {
     termRef.current?.writeln(text)
   }, [])
 
-  const loadEngineState = useCallback(async (announce = false) => {
+  // endpointUrl을 deps에서 제거 (ref로 접근). 연결 성공 여부(boolean) 반환.
+  const loadEngineState = useCallback(async (announce = false): Promise<boolean> => {
     try {
-      const [state, models] = await Promise.all([ai.state(), ai.models()])
+      const [state, models, provResult] = await Promise.all([
+        ai.state(),
+        ai.models(),
+        ai.providers(),
+      ])
+      const modelList = models.models
+      const serverEp = state.baseUrl || endpointUrlRef.current
+      const currentProvider = state.provider || 'ollama'
+
       setIsConfigured(state.isConfigured)
-      setCurrentModel(state.model || DEFAULT_MODEL)
       setEngineName(state.engine || 'ollama')
-      setAvailableModels(models.models)
-      setStatusMessage(state.isConfigured ? `Ready on ${OLLAMA_ENDPOINT}` : `Offline at ${OLLAMA_ENDPOINT}`)
+      setActiveProvider(currentProvider)
+      setProviders(provResult.providers)
+      setAvailableModels(modelList)
+
+      const statusMsg = currentProvider === 'gemini'
+        ? (state.isConfigured ? 'Gemini Ready' : 'Gemini: API Key 없음')
+        : (state.isConfigured ? `Ready on ${serverEp}` : `Offline at ${serverEp}`)
+      setStatusMessage(statusMsg)
+
+      const serverModel = state.model || DEFAULT_MODEL
+      const resolvedModel = modelList.length > 0
+        ? (modelList.includes(serverModel) ? serverModel : modelList[0])
+        : serverModel
+      setCurrentModel(resolvedModel)
 
       if (announce) {
-        writeLine(`\x1b[32mEngine: ${state.engine} | Model: ${state.model}\x1b[0m`)
+        const providerLabel = currentProvider === 'gemini' ? 'Gemini' : `Ollama (${serverEp})`
+        writeLine(`\x1b[32mEngine: ${providerLabel} | Model: ${resolvedModel}\x1b[0m`)
       }
+
+      return state.isConfigured
     } catch (error) {
       setIsConfigured(false)
       setAvailableModels([])
-      setStatusMessage(`Offline at ${OLLAMA_ENDPOINT}`)
+      setStatusMessage(`Offline at ${endpointUrlRef.current}`)
       if (announce) {
-        const message = error instanceof Error ? error.message : 'Ollama is not reachable'
+        const message = error instanceof Error ? error.message : 'Connection failed'
         writeLine(`\x1b[31m${message}\x1b[0m`)
       }
+      return false
     }
   }, [writeLine])
 
+  // ── Endpoint 입력 핸들러 ────────────────────────────────────
+  const handleEndpointChange = useCallback((value: string) => {
+    endpointUrlRef.current = value
+    setEndpointUrl(value)
+  }, [])
+
+  // ── 제공자 전환 ─────────────────────────────────────────────
+  const handleProviderChange = useCallback(async (provider: string) => {
+    setActiveProvider(provider)
+    if (!isWebView2()) return
+    try {
+      await ai.setProvider(provider)
+      await loadEngineState(false)
+      writeLine(`\x1b[32mProvider: ${provider}\x1b[0m`)
+    } catch (error) {
+      writeLine(`\x1b[31mProvider 전환 실패: ${error instanceof Error ? error.message : 'Unknown error'}\x1b[0m`)
+    } finally {
+      writePrompt()
+    }
+  }, [loadEngineState, writeLine, writePrompt])
+
+  // ── 모델 선택 즉시 백엔드 적용 ─────────────────────────────
+  const handleModelChange = useCallback(async (newModel: string) => {
+    setCurrentModel(newModel)
+    if (!isWebView2()) return
+    try {
+      await ai.setModel(newModel)
+      writeLine(`\x1b[32mModel: ${newModel}\x1b[0m`)
+    } catch (error) {
+      writeLine(`\x1b[31mModel 변경 실패: ${error instanceof Error ? error.message : 'Unknown error'}\x1b[0m`)
+    } finally {
+      writePrompt()
+    }
+  }, [writeLine, writePrompt])
+
+  // ── 버튼 핸들러 ────────────────────────────────────────────
+
+  const handleCheck = useCallback(async () => {
+    setIsBusy(true)
+    try {
+      if (activeProvider === 'gemini') {
+        if (apiKey.trim()) await ai.setApiKey('gemini', apiKey.trim())
+      } else {
+        await ai.setEndpoint(endpointUrlRef.current)
+      }
+      const connected = await loadEngineState(true)
+      if (connected) {
+        writeLine('\x1b[32m✓ 연결되었습니다\x1b[0m')
+      }
+      writeLine('\x1b[33mAI는 정확하지 않는 정보를 제공할 수 있습니다. 중요한 정보는 확인하세요\x1b[0m')
+    } catch (error) {
+      writeLine(`\x1b[31mCheck 실패: ${error instanceof Error ? error.message : 'Unknown error'}\x1b[0m`)
+    } finally {
+      setIsBusy(false)
+      writePrompt()
+    }
+  }, [activeProvider, apiKey, loadEngineState, writeLine, writePrompt])
+
+  const handleApplySettings = useCallback(async () => {
+    setIsBusy(true)
+    try {
+      if (activeProvider === 'gemini') {
+        if (apiKey.trim()) await ai.setApiKey('gemini', apiKey.trim())
+      } else {
+        await ai.setEndpoint(endpointUrlRef.current)
+      }
+      await ai.setModel(currentModel)
+      await ai.setSystem(systemPrompt)
+      const connected = await loadEngineState(false)
+      const appliedTo = activeProvider === 'gemini' ? 'Google Gemini' : endpointUrlRef.current
+      writeLine(`\x1b[32mApplied: ${appliedTo} | ${currentModel}\x1b[0m`)
+      if (connected) {
+        writeLine('\x1b[32m✓ 연결되었습니다\x1b[0m')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to apply settings'
+      writeLine(`\x1b[31m${message}\x1b[0m`)
+    } finally {
+      setIsBusy(false)
+      writePrompt()
+    }
+  }, [activeProvider, apiKey, currentModel, systemPrompt, loadEngineState, writeLine, writePrompt])
+
+  // AI분석: 마지막 SSH 명령어 출력만 스트리밍 분석
+  const handleAnalyzeClick = useCallback(async () => {
+    setIsBusy(true)
+    writeLine('\x1b[36mSSH 마지막 출력 AI 분석 중...\x1b[0m')
+    try {
+      const result = await ai.analyzeLast((chunk) => {
+        termRef.current?.write(chunk)
+      })
+      termRef.current?.writeln('')
+      if (!result.content.trim()) {
+        writeLine('\x1b[33mSSH 터미널에서 명령어를 실행한 후 다시 시도하세요.\x1b[0m')
+      }
+    } catch (error) {
+      writeLine(`\x1b[31mError: ${error instanceof Error ? error.message : 'Unknown error'}\x1b[0m`)
+    } finally {
+      setIsBusy(false)
+      writePrompt()
+    }
+  }, [writeLine, writePrompt])
+
+  // ── 빌트인 커맨드 ──────────────────────────────────────────
   const printHelp = useCallback(() => {
     const term = termRef.current
     if (!term) return
     term.writeln('')
     term.writeln('\x1b[1;36m--- Local LLM Terminal Commands ---\x1b[0m')
     term.writeln('')
-    term.writeln('  \x1b[33mengine status\x1b[0m              Check Ollama availability')
-    term.writeln('  \x1b[33mmodel list\x1b[0m                List installed local models')
+    term.writeln('  \x1b[33mengine status\x1b[0m              Check AI engine availability')
+    term.writeln('  \x1b[33mmodel list\x1b[0m                List available models')
     term.writeln('  \x1b[33mmodel use <MODEL>\x1b[0m         Switch active model')
     term.writeln('  \x1b[33msystem set <PROMPT>\x1b[0m      Update system prompt')
-    term.writeln('  \x1b[33manalyze last\x1b[0m             Analyze recent SSH output')
-    term.writeln('  \x1b[33msuggest command\x1b[0m          Suggest one safe next SSH command')
-    term.writeln('  \x1b[33mstatus\x1b[0m                     Show local LLM state')
-    term.writeln('  \x1b[33mclear\x1b[0m                      Clear terminal')
-    term.writeln('  \x1b[33mreset\x1b[0m                      Clear conversation history')
-    term.writeln('  \x1b[33mhelp\x1b[0m                       Show this help')
+    term.writeln('  \x1b[33manalyze last\x1b[0m             SSH 마지막 명령어 출력 AI 분석')
+    term.writeln('  \x1b[33mstatus\x1b[0m                   Show AI engine state')
+    term.writeln('  \x1b[33mclear\x1b[0m                    Clear terminal')
+    term.writeln('  \x1b[33mreset\x1b[0m                    Clear conversation history')
+    term.writeln('  \x1b[33mhelp\x1b[0m                     Show this help')
     term.writeln('')
-    term.writeln('  Any other input is sent to the local model.')
+    term.writeln('  Any other input is sent to the AI model.')
   }, [])
 
   const handleBuiltinCommand = useCallback(async (command: string): Promise<boolean> => {
@@ -93,15 +229,9 @@ export function AITerminal() {
     const lower = normalized.toLowerCase()
     const parts = normalized.split(/\s+/)
 
-    if (lower === 'help') {
-      printHelp()
-      return true
-    }
+    if (lower === 'help') { printHelp(); return true }
 
-    if (lower === 'clear') {
-      termRef.current?.clear()
-      return true
-    }
+    if (lower === 'clear') { termRef.current?.clear(); return true }
 
     if (lower === 'reset') {
       await ai.clear().catch(() => undefined)
@@ -110,7 +240,7 @@ export function AITerminal() {
     }
 
     if (lower === 'status' || lower === 'engine status') {
-      await loadEngineState(true)
+      await handleCheck()
       return true
     }
 
@@ -118,14 +248,13 @@ export function AITerminal() {
       try {
         const result = await ai.models()
         setAvailableModels(result.models)
-        writeLine('\x1b[1mInstalled Models:\x1b[0m')
+        writeLine('\x1b[1mAvailable Models:\x1b[0m')
         result.models.forEach((model) => {
           const marker = model === currentModel ? ' \x1b[32m<current>\x1b[0m' : ''
           writeLine(`  \x1b[33m${model}\x1b[0m${marker}`)
         })
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to list models'
-        writeLine(`\x1b[31m${message}\x1b[0m`)
+        writeLine(`\x1b[31m${error instanceof Error ? error.message : 'Failed to list models'}\x1b[0m`)
       }
       return true
     }
@@ -147,20 +276,14 @@ export function AITerminal() {
     }
 
     if (lower === 'analyze last') {
-      const result = await ai.analyzeLast()
-      writeLine(result.content)
-      return true
-    }
-
-    if (lower === 'suggest command') {
-      const result = await ai.suggestCommand()
-      writeLine(result.content)
+      await handleAnalyzeClick()
       return true
     }
 
     return false
-  }, [currentModel, loadEngineState, printHelp, writeLine])
+  }, [currentModel, handleCheck, handleAnalyzeClick, printHelp, writeLine])
 
+  // ── 메시지 전송 (스트리밍) ─────────────────────────────────
   const sendMessage = useCallback(async (message: string) => {
     const term = termRef.current
     if (!term || isProcessingRef.current) return
@@ -171,7 +294,7 @@ export function AITerminal() {
 
     if (!isWebView2()) {
       term.writeln('\x1b[31mWebView2 not available. Running in browser mode.\x1b[0m')
-      term.writeln('\x1b[33mLocal LLM calls require the native WPF host.\x1b[0m')
+      term.writeln('\x1b[33mAI calls require the native WPF host.\x1b[0m')
       isProcessingRef.current = false
       setIsStreaming(false)
       return
@@ -183,7 +306,7 @@ export function AITerminal() {
       })
       term.writeln('')
       if (!response.content.trim()) {
-        term.writeln('\x1b[33mNo content returned by local model.\x1b[0m')
+        term.writeln('\x1b[33mNo content returned.\x1b[0m')
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error'
@@ -194,6 +317,7 @@ export function AITerminal() {
     }
   }, [])
 
+  // ── xterm 초기화 ───────────────────────────────────────────
   useEffect(() => {
     if (!terminalRef.current) return
 
@@ -225,8 +349,8 @@ export function AITerminal() {
     fitAddonRef.current = fitAddon
 
     term.writeln('\x1b[1;36mLocal LLM Terminal\x1b[0m')
-    term.writeln('\x1b[33mEngine: Ollama (localhost:11434)\x1b[0m')
-    term.writeln('Use the settings panel above to select a model and prompt.')
+    term.writeln(`\x1b[33mEngine: Ollama (${DEFAULT_ENDPOINT})\x1b[0m`)
+    term.writeln('Use the settings panel above to select a provider and model.')
     term.writeln('Type \x1b[33mhelp\x1b[0m for available commands.')
     writePrompt()
 
@@ -249,10 +373,7 @@ export function AITerminal() {
       if (data === '\r') {
         const command = inputBufferRef.current.trim()
         inputBufferRef.current = ''
-        if (!command) {
-          writePrompt()
-          return
-        }
+        if (!command) { writePrompt(); return }
 
         handleBuiltinCommand(command).then(handled => {
           if (handled) {
@@ -281,38 +402,15 @@ export function AITerminal() {
 
     logger.info('Local LLM Terminal initialized')
 
-    return () => {
-      term.dispose()
-    }
+    return () => { term.dispose() }
   }, [handleBuiltinCommand, loadEngineState, sendMessage, writePrompt])
 
-  const handleApplySettings = async () => {
-    setIsBusy(true)
-    try {
-      await ai.configure({ model: currentModel, systemPrompt })
-      await ai.setModel(currentModel)
-      await ai.setSystem(systemPrompt)
-      await loadEngineState(false)
-      writeLine(`\x1b[32mApplied settings: ${currentModel}\x1b[0m`)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to apply settings'
-      writeLine(`\x1b[31m${message}\x1b[0m`)
-    } finally {
-      setIsBusy(false)
-    }
-  }
-
-  const handleAnalyzeClick = async () => {
-    writeLine('\x1b[36mRunning analyze last...\x1b[0m')
-    const result = await ai.analyzeLast()
-    writeLine(result.content)
-    writePrompt()
-  }
-
-  const handleSuggestClick = async () => {
-    writeLine('\x1b[36mRunning suggest command...\x1b[0m')
-    const result = await ai.suggestCommand()
-    writeLine(result.content)
+  // ── Cancel / Clear ─────────────────────────────────────────
+  const handleCancel = async () => {
+    try { await ai.cancelStream() } catch {}
+    isProcessingRef.current = false
+    setIsStreaming(false)
+    termRef.current?.writeln('\r\n\x1b[33mCancelled\x1b[0m')
     writePrompt()
   }
 
@@ -322,16 +420,9 @@ export function AITerminal() {
     inputBufferRef.current = ''
   }
 
-  const handleCancel = async () => {
-    try {
-      await ai.cancelStream()
-    } catch {}
-    isProcessingRef.current = false
-    setIsStreaming(false)
-    termRef.current?.writeln('\r\n\x1b[33mCancelled\x1b[0m')
-    writePrompt()
-  }
+  const isGemini = activeProvider === 'gemini'
 
+  // ── 렌더 ───────────────────────────────────────────────────
   return (
     <div className="ai-terminal local-llm-terminal">
       <div className="terminal-header">
@@ -340,15 +431,21 @@ export function AITerminal() {
           {isConfigured ? (
             <>
               <span className="status-badge connected">Ready</span>
-              <span className="status-info">{engineName} | {currentModel}</span>
+              <span className="status-info">
+                {isGemini ? 'Gemini' : engineName} | {currentModel}
+              </span>
             </>
           ) : (
-            <span className="status-badge disconnected">Ollama Offline</span>
+            <span className="status-badge disconnected">
+              {isGemini ? 'Gemini Offline' : 'Ollama Offline'}
+            </span>
           )}
           {isStreaming && <span className="status-badge streaming">Generating</span>}
         </div>
         <div className="terminal-controls">
-          <button onClick={() => setIsSettingsOpen((prev) => !prev)}>{isSettingsOpen ? 'Hide Settings' : 'Settings'}</button>
+          <button onClick={() => setIsSettingsOpen(prev => !prev)}>
+            {isSettingsOpen ? 'Hide Settings' : 'Settings'}
+          </button>
           <button onClick={handleClear}>Clear</button>
           {isStreaming && <button onClick={handleCancel}>Cancel</button>}
         </div>
@@ -357,36 +454,97 @@ export function AITerminal() {
       {isSettingsOpen && (
         <div className="llm-settings-panel">
           <div className="settings-grid">
+
+            {/* ── Provider 선택 ─────────────────────────────── */}
             <div className="form-group">
-              <label>Engine Endpoint</label>
-              <input type="text" value={OLLAMA_ENDPOINT} readOnly />
+              <label>AI Provider</label>
+              <select
+                value={activeProvider}
+                onChange={(e) => handleProviderChange(e.target.value)}
+                disabled={isBusy}
+              >
+                {providers.length > 0
+                  ? providers.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))
+                  : (
+                    <>
+                      <option value="ollama">Ollama (Local)</option>
+                      <option value="gemini">Google Gemini</option>
+                    </>
+                  )
+                }
+              </select>
             </div>
+
+            {/* ── Ollama: Endpoint / Gemini: API Key ─────────── */}
+            {isGemini ? (
+              <div className="form-group">
+                <label>Gemini API Key</label>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="AIza..."
+                  autoComplete="off"
+                />
+              </div>
+            ) : (
+              <div className="form-group">
+                <label>Engine Endpoint</label>
+                <input
+                  type="text"
+                  value={endpointUrl}
+                  onChange={(e) => handleEndpointChange(e.target.value)}
+                  placeholder="http://172.16.1.103:11434"
+                />
+              </div>
+            )}
+
+            {/* ── Engine Status ───────────────────────────────── */}
             <div className="form-group">
               <label>Engine Status</label>
               <input type="text" value={statusMessage} readOnly />
             </div>
+
+            {/* ── Model ──────────────────────────────────────── */}
             <div className="form-group">
               <label>Model</label>
-              <select value={currentModel} onChange={(e) => setCurrentModel(e.target.value)}>
-                {availableModels.length === 0 ? <option value={currentModel}>{currentModel}</option> : null}
+              <select
+                value={currentModel}
+                onChange={(e) => handleModelChange(e.target.value)}
+              >
+                {!availableModels.includes(currentModel) && (
+                  <option value={currentModel}>{currentModel}</option>
+                )}
                 {availableModels.map((model) => (
                   <option key={model} value={model}>{model}</option>
                 ))}
               </select>
             </div>
-            <div className="form-group settings-actions">
-              <label>Controls</label>
-              <div className="button-row">
-                <button type="button" onClick={() => loadEngineState(true)} disabled={isBusy}>Check</button>
-                <button type="button" onClick={handleApplySettings} disabled={isBusy}>Apply</button>
-                <button type="button" onClick={handleAnalyzeClick} disabled={!isConfigured}>Analyze Last</button>
-                <button type="button" onClick={handleSuggestClick} disabled={!isConfigured}>Suggest Command</button>
-              </div>
-            </div>
+
           </div>
+
+          {/* ── System Prompt 위 버튼 행 ─────────────────────── */}
+          <div className="settings-button-row">
+            <button type="button" onClick={handleCheck} disabled={isBusy}>
+              Check
+            </button>
+            <button type="button" onClick={handleApplySettings} disabled={isBusy}>
+              Apply
+            </button>
+            <button type="button" onClick={handleAnalyzeClick} disabled={!isConfigured || isBusy}>
+              AI분석
+            </button>
+          </div>
+
           <div className="form-group prompt-group">
             <label>System Prompt</label>
-            <textarea value={systemPrompt} onChange={(e) => setSystemPrompt(e.target.value)} rows={3} />
+            <textarea
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              rows={3}
+            />
           </div>
         </div>
       )}
