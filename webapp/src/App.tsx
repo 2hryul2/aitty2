@@ -95,8 +95,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Aitty v0.1.0</h1>
-        <p className="subtitle">SSH + AI Terminal for Windows</p>
+        <h1><span className="shinhan">신한DS</span> Aitty <span className="subtitle">(SSH + AI Terminal for Windows, v0.1.0)</span></h1>
       </header>
 
       <div className="app-layout" ref={layoutRef}>

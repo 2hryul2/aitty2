@@ -30,10 +30,13 @@ export function AITerminal() {
   const [engineName, setEngineName] = useState('ollama')
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [isSettingsOpen, setIsSettingsOpen] = useState(true)
+  const [isSystemPromptOpen, setIsSystemPromptOpen] = useState(false)
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT)
   const [endpointUrl, setEndpointUrl] = useState(DEFAULT_ENDPOINT)
   const [statusMessage, setStatusMessage] = useState('Not checked')
   const [isBusy, setIsBusy] = useState(false)
+  const [isDirty, setIsDirty] = useState(false)       // 설정 변경 후 미적용
+  const [isApplySuccess, setIsApplySuccess] = useState(false) // Apply 성공
 
   // ── 제공자 관련 상태 ────────────────────────────────────────
   const [activeProvider, setActiveProvider] = useState<string>('ollama')
@@ -105,6 +108,8 @@ export function AITerminal() {
   const handleEndpointChange = useCallback((value: string) => {
     endpointUrlRef.current = value
     setEndpointUrl(value)
+    setIsDirty(true)
+    setIsApplySuccess(false)
   }, [])
 
   // ── 제공자 전환 ─────────────────────────────────────────────
@@ -174,10 +179,16 @@ export function AITerminal() {
       writeLine(`\x1b[32mApplied: ${appliedTo} | ${currentModel}\x1b[0m`)
       if (connected) {
         writeLine('\x1b[32m✓ 연결되었습니다\x1b[0m')
+        setIsDirty(false)
+        setIsApplySuccess(true)
+      } else {
+        writeLine('\x1b[31m✗ 연결 실패 - 설정을 확인하세요\x1b[0m')
+        setIsApplySuccess(false)
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to apply settings'
       writeLine(`\x1b[31m${message}\x1b[0m`)
+      setIsApplySuccess(false)
     } finally {
       setIsBusy(false)
       writePrompt()
@@ -186,19 +197,57 @@ export function AITerminal() {
 
   // AI분석: 마지막 SSH 명령어 출력만 스트리밍 분석
   const handleAnalyzeClick = useCallback(async () => {
+    const term = termRef.current
+    if (!term) return
+
     setIsBusy(true)
-    writeLine('\x1b[36mSSH 마지막 출력 AI 분석 중...\x1b[0m')
+    isProcessingRef.current = true
+    term.writeln('')
+
+    // ── 진행 중 인디케이터 (타이프라이터 효과, 15ms/글자) ──────────
+    const thinkingMessages = [
+      'AI가 지식의 바다를 헤엄치는 중! 잠시 후 최선의 답변을 가져다 드릴게요...',
+      'AI 뉴런들이 전속력으로 달리는 중! 최고의 답변을 향해 질주하고 있습니다...',
+      'AI가 수천만 개의 파라미터를 총동원 중! 최적의 답을 조합하고 있어요...',
+      'AI가 도서관 백만 권을 동시에 검색하는 중! 핵심만 쏙 뽑아 드릴게요...',
+      'AI 요리사가 답변을 정성껏 요리하는 중! 잠시만 기다리시면 곧 나옵니다...',
+      'AI가 생각의 미로 속을 탐험하는 중! 최선의 경로를 찾고 있습니다...',
+      'AI 회의실에서 수천 개의 의견이 충돌 중! 잠시 후 최종 결론이 나옵니다...',
+      'AI가 은하수만큼 광활한 데이터를 스캔하는 중! 잠시 후 결과를 알려드립니다...',
+      'AI 탐정이 최선의 답을 추적하는 중! 모든 단서를 수집하고 있어요...',
+      'AI가 천재들의 집단 지성을 결집하는 중! 잠시 후 최고의 답변으로 돌아올게요...',
+    ]
+    const randomMsg = thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)]
+    const indicatorLines: { text: string; color: string }[] = [
+      { text: ' ----------------------------------------------------------------------------', color: '\x1b[2;36m' },
+      { text: `  ${randomMsg}`, color: '\x1b[36m' },
+      { text: '  ※ AI는 정확하지 않는 정보를 제공할 수 있습니다. 중요한 정보는 반드시 확인하세요!', color: '\x1b[33m' },
+      { text: ' ----------------------------------------------------------------------------', color: '\x1b[2;36m' },
+    ]
+    for (const { text, color } of indicatorLines) {
+      term.write(color)
+      for (const char of text) {
+        if (!isProcessingRef.current) break
+        term.write(char)
+        await new Promise(r => setTimeout(r, 15))
+      }
+      term.write('\x1b[0m')
+      if (isProcessingRef.current) term.write('\r\n')
+    }
+    term.write('\r\n')
+
     try {
       const result = await ai.analyzeLast((chunk) => {
-        termRef.current?.write(chunk)
+        term.write(chunk)
       })
-      termRef.current?.writeln('')
+      term.writeln('')
       if (!result.content.trim()) {
         writeLine('\x1b[33mSSH 터미널에서 명령어를 실행한 후 다시 시도하세요.\x1b[0m')
       }
     } catch (error) {
       writeLine(`\x1b[31mError: ${error instanceof Error ? error.message : 'Unknown error'}\x1b[0m`)
     } finally {
+      isProcessingRef.current = false
       setIsBusy(false)
       writePrompt()
     }
@@ -300,6 +349,38 @@ export function AITerminal() {
       return
     }
 
+    // ── 진행 중 인디케이터 (타이프라이터 효과, 15ms/글자) ──────────
+    const thinkingMessages = [
+      'AI가 지식의 바다를 헤엄치는 중! 잠시 후 최선의 답변을 가져다 드릴게요...',
+      'AI 뉴런들이 전속력으로 달리는 중! 최고의 답변을 향해 질주하고 있습니다...',
+      'AI가 수천만 개의 파라미터를 총동원 중! 최적의 답을 조합하고 있어요...',
+      'AI가 도서관 백만 권을 동시에 검색하는 중! 핵심만 쏙 뽑아 드릴게요...',
+      'AI 요리사가 답변을 정성껏 요리하는 중! 잠시만 기다리시면 곧 나옵니다...',
+      'AI가 생각의 미로 속을 탐험하는 중! 최선의 경로를 찾고 있습니다...',
+      'AI 회의실에서 수천 개의 의견이 충돌 중! 잠시 후 최종 결론이 나옵니다...',
+      'AI가 은하수만큼 광활한 데이터를 스캔하는 중! 잠시 후 결과를 알려드립니다...',
+      'AI 탐정이 최선의 답을 추적하는 중! 모든 단서를 수집하고 있어요...',
+      'AI가 천재들의 집단 지성을 결집하는 중! 잠시 후 최고의 답변으로 돌아올게요...',
+    ]
+    const randomMsg = thinkingMessages[Math.floor(Math.random() * thinkingMessages.length)]
+    const indicatorLines: { text: string; color: string }[] = [
+      { text: ' ----------------------------------------------------------------------------', color: '\x1b[2;36m' },
+      { text: `  ${randomMsg}`, color: '\x1b[36m' },
+      { text: '  ※ AI는 정확하지 않는 정보를 제공할 수 있습니다. 중요한 정보는 반드시 확인하세요!', color: '\x1b[33m' },
+      { text: ' ----------------------------------------------------------------------------', color: '\x1b[2;36m' },
+    ]
+    for (const { text, color } of indicatorLines) {
+      term.write(color)
+      for (const char of text) {
+        if (!isProcessingRef.current) break
+        term.write(char)
+        await new Promise(r => setTimeout(r, 15))
+      }
+      term.write('\x1b[0m')
+      if (isProcessingRef.current) term.write('\r\n')
+    }
+    term.write('\r\n')
+
     try {
       const response = await ai.stream(message, (chunk) => {
         term.write(chunk)
@@ -349,13 +430,37 @@ export function AITerminal() {
     fitAddonRef.current = fitAddon
 
     term.writeln('\x1b[1;36mLocal LLM Terminal\x1b[0m')
-    term.writeln(`\x1b[33mEngine: Ollama (${DEFAULT_ENDPOINT})\x1b[0m`)
-    term.writeln('Use the settings panel above to select a provider and model.')
     term.writeln('Type \x1b[33mhelp\x1b[0m for available commands.')
-    writePrompt()
 
     if (isWebView2()) {
-      loadEngineState(false).catch(() => undefined)
+      // ── 초기 설정 점검 ───────────────────────────────────────
+      ;(async () => {
+        term.writeln('')
+        term.writeln('\x1b[2;36m■ 초기 설정 점검 중...\x1b[0m')
+        try {
+          const connected = await loadEngineState(false)
+          const state = await ai.state().catch(() => null)
+          const provider = state?.provider || 'ollama'
+          const model = state?.model || DEFAULT_MODEL
+          const endpoint = provider === 'gemini'
+            ? 'Google Gemini API'
+            : (state?.baseUrl || endpointUrlRef.current)
+          term.writeln(`\x1b[36m├─ Provider : ${provider === 'gemini' ? 'Google Gemini' : 'Ollama'}\x1b[0m`)
+          term.writeln(`\x1b[36m├─ Endpoint : ${endpoint}\x1b[0m`)
+          term.writeln(`\x1b[36m├─ Model    : ${model}\x1b[0m`)
+          if (connected) {
+            term.writeln('\x1b[32m└─ ✓ 연결 성공 | 바로 AI에게 질문하세요!\x1b[0m')
+            setIsApplySuccess(true)
+          } else {
+            term.writeln('\x1b[31m└─ ✗ 연결 실패 | [Check] 버튼으로 재시도하세요\x1b[0m')
+          }
+        } catch {
+          term.writeln('\x1b[31m└─ ✗ 초기화 실패 | 설정을 확인하세요\x1b[0m')
+        }
+        writePrompt()
+      })()
+    } else {
+      writePrompt()
     }
 
     term.onData((data: string) => {
@@ -400,10 +505,58 @@ export function AITerminal() {
       }
     })
 
+    // 드래그 선택 → 클립보드 자동 복사
+    term.onSelectionChange(() => {
+      const selected = term.getSelection()
+      if (selected) {
+        navigator.clipboard.writeText(selected).catch(() => {})
+      }
+    })
+
+    // 우클릭 → 클립보드에서 붙여넣기 (입력 버퍼에도 추가)
+    const containerEl = terminalRef.current
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault()
+      if (isProcessingRef.current) return
+      navigator.clipboard.readText()
+        .then(text => {
+          if (text) {
+            term.write(text)
+            inputBufferRef.current += text
+          }
+        })
+        .catch(() => {})
+    }
+    containerEl?.addEventListener('contextmenu', handleContextMenu)
+
     logger.info('Local LLM Terminal initialized')
 
-    return () => { term.dispose() }
+    return () => {
+      containerEl?.removeEventListener('contextmenu', handleContextMenu)
+      term.dispose()
+    }
   }, [handleBuiltinCommand, loadEngineState, sendMessage, writePrompt])
+
+  // ── AI 30초 헬스체크 ──────────────────────────────────────
+  useEffect(() => {
+    if (!isWebView2()) return
+    const timer = setInterval(async () => {
+      try {
+        const state = await ai.state()
+        const serverEp = state.baseUrl || endpointUrlRef.current
+        const provider = state.provider || 'ollama'
+        setIsConfigured(state.isConfigured)
+        const statusMsg = provider === 'gemini'
+          ? (state.isConfigured ? 'Gemini Ready' : 'Gemini: API Key 없음')
+          : (state.isConfigured ? `Ready on ${serverEp}` : `Offline at ${serverEp}`)
+        setStatusMessage(statusMsg)
+      } catch {
+        setIsConfigured(false)
+        setStatusMessage(`Offline at ${endpointUrlRef.current}`)
+      }
+    }, 30_000)
+    return () => clearInterval(timer)
+  }, [])
 
   // ── Cancel / Clear ─────────────────────────────────────────
   const handleCancel = async () => {
@@ -447,6 +600,13 @@ export function AITerminal() {
             {isSettingsOpen ? 'Hide Settings' : 'Settings'}
           </button>
           <button onClick={handleClear}>Clear</button>
+          <button
+            onClick={handleAnalyzeClick}
+            disabled={!isConfigured || isBusy}
+            style={{ color: '#ffc107', borderColor: '#ffc107' }}
+          >
+            AI분석
+          </button>
           {isStreaming && <button onClick={handleCancel}>Cancel</button>}
         </div>
       </div>
@@ -484,7 +644,7 @@ export function AITerminal() {
                 <input
                   type="password"
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  onChange={(e) => { setApiKey(e.target.value); setIsDirty(true); setIsApplySuccess(false) }}
                   placeholder="AIza..."
                   autoComplete="off"
                 />
@@ -525,27 +685,42 @@ export function AITerminal() {
 
           </div>
 
-          {/* ── System Prompt 위 버튼 행 ─────────────────────── */}
+          {/* ── 버튼 행 ──────────────────────────────────────── */}
           <div className="settings-button-row">
             <button type="button" onClick={handleCheck} disabled={isBusy}>
               Check
             </button>
-            <button type="button" onClick={handleApplySettings} disabled={isBusy}>
+            <button
+              type="button"
+              onClick={handleApplySettings}
+              disabled={isBusy}
+              style={isDirty
+                ? { color: '#ffc107', borderColor: '#ffc107' }
+                : isApplySuccess
+                  ? { color: '#4caf50', borderColor: '#4caf50' }
+                  : {}
+              }
+            >
               Apply
             </button>
-            <button type="button" onClick={handleAnalyzeClick} disabled={!isConfigured || isBusy}>
-              AI분석
+            <button
+              type="button"
+              onClick={() => setIsSystemPromptOpen(prev => !prev)}
+            >
+              시스템 프롬프트
             </button>
           </div>
 
-          <div className="form-group prompt-group">
-            <label>System Prompt</label>
-            <textarea
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              rows={3}
-            />
-          </div>
+          {isSystemPromptOpen && (
+            <div className="form-group prompt-group">
+              <label>System Prompt</label>
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => { setSystemPrompt(e.target.value); setIsDirty(true); setIsApplySuccess(false) }}
+                rows={3}
+              />
+            </div>
+          )}
         </div>
       )}
 
