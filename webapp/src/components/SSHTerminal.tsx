@@ -198,7 +198,9 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
       e.preventDefault()
       navigator.clipboard.readText()
         .then(text => { if (text) shellWriteRef.current(text).catch(() => {}) })
-        .catch(() => {})
+        .catch(() => {
+          term.writeln('\r\n\x1b[33m⚠ 클립보드 권한 없음. Ctrl+V를 사용하세요.\x1b[0m')
+        })
     }
     containerEl?.addEventListener('contextmenu', handleContextMenu)
 

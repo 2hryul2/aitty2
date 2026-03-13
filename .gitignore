@@ -45,6 +45,8 @@ logs/
 
 # --- Build artifacts ---
 publish/
+publish_new/
+publish.zip
 aitty.zip
 src/Aitty/wwwroot/
 

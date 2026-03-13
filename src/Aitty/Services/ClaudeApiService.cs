@@ -8,11 +8,20 @@ using Aitty.Models;
 
 namespace Aitty.Services;
 
-public class ClaudeApiService : IDisposable
+public class ClaudeApiService : IAiService
 {
     private const string ApiUrl = "https://api.anthropic.com/v1/messages";
     private const string ApiVersion = "2023-06-01";
-    private const string DefaultModel = "claude-sonnet-4-6-20250514";
+    private const string DefaultModel = "claude-sonnet-4-5-20250929";
+
+    private static readonly string[] KnownModels =
+    [
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+        "claude-opus-4-5-20251101",
+        "claude-sonnet-4-5-20250929",
+    ];
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -28,9 +37,16 @@ public class ClaudeApiService : IDisposable
     private string? _systemPrompt;
     private int _maxTokens = 4096;
 
+    public string ProviderName => "claude";
     public bool IsConfigured => !string.IsNullOrEmpty(_apiKey);
     public string CurrentModel => _model;
     public IReadOnlyList<AiChatMessage> History => _conversationHistory.AsReadOnly();
+
+    public Task<bool> IsEngineAvailableAsync(CancellationToken ct = default)
+        => Task.FromResult(IsConfigured);
+
+    public Task<List<string>> ListModelsAsync(CancellationToken ct = default)
+        => Task.FromResult(new List<string>(KnownModels));
 
     public ClaudeApiService()
     {

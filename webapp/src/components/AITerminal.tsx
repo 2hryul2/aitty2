@@ -43,6 +43,10 @@ export function AITerminal() {
   const [apiKey, setApiKey] = useState('')
   const [providers, setProviders] = useState<AiProvider[]>([])
 
+  // providers 상태를 setInterval 클로저에서 안전하게 참조하기 위한 ref
+  const providersRef = useRef<typeof providers>([])
+  useEffect(() => { providersRef.current = providers }, [providers])
+
   const resizeRef = useTerminalResize(() => {
     if (fitAddonRef.current && termRef.current) {
       fitAddonRef.current.fit()
@@ -75,8 +79,12 @@ export function AITerminal() {
       setProviders(provResult.providers)
       setAvailableModels(modelList)
 
-      const statusMsg = currentProvider === 'gemini'
-        ? (state.isConfigured ? 'Gemini Ready' : 'Gemini: API Key 없음')
+      const currentProviderInfo = provResult.providers.find(p => p.id === currentProvider)
+      const isApiKeyProvider = currentProviderInfo?.requiresApiKey ?? false
+      const providerLabel = currentProviderInfo?.name ?? currentProvider
+
+      const statusMsg = isApiKeyProvider
+        ? (state.isConfigured ? `${providerLabel} Ready` : `${providerLabel}: API Key 없음`)
         : (state.isConfigured ? `Ready on ${serverEp}` : `Offline at ${serverEp}`)
       setStatusMessage(statusMsg)
 
@@ -87,8 +95,8 @@ export function AITerminal() {
       setCurrentModel(resolvedModel)
 
       if (announce) {
-        const providerLabel = currentProvider === 'gemini' ? 'Gemini' : `Ollama (${serverEp})`
-        writeLine(`\x1b[32mEngine: ${providerLabel} | Model: ${resolvedModel}\x1b[0m`)
+        const announceLabel = isApiKeyProvider ? providerLabel : `Ollama (${serverEp})`
+        writeLine(`\x1b[32mEngine: ${announceLabel} | Model: ${resolvedModel}\x1b[0m`)
       }
 
       return state.isConfigured
@@ -146,8 +154,9 @@ export function AITerminal() {
   const handleCheck = useCallback(async () => {
     setIsBusy(true)
     try {
-      if (activeProvider === 'gemini') {
-        if (apiKey.trim()) await ai.setApiKey('gemini', apiKey.trim())
+      const providerInfo = providers.find(p => p.id === activeProvider)
+      if (providerInfo?.requiresApiKey) {
+        if (apiKey.trim()) await ai.setApiKey(activeProvider, apiKey.trim())
       } else {
         await ai.setEndpoint(endpointUrlRef.current)
       }
@@ -167,15 +176,18 @@ export function AITerminal() {
   const handleApplySettings = useCallback(async () => {
     setIsBusy(true)
     try {
-      if (activeProvider === 'gemini') {
-        if (apiKey.trim()) await ai.setApiKey('gemini', apiKey.trim())
+      const providerInfo = providers.find(p => p.id === activeProvider)
+      if (providerInfo?.requiresApiKey) {
+        if (apiKey.trim()) await ai.setApiKey(activeProvider, apiKey.trim())
       } else {
         await ai.setEndpoint(endpointUrlRef.current)
       }
       await ai.setModel(currentModel)
       await ai.setSystem(systemPrompt)
       const connected = await loadEngineState(false)
-      const appliedTo = activeProvider === 'gemini' ? 'Google Gemini' : endpointUrlRef.current
+      const appliedTo = providerInfo?.requiresApiKey
+        ? (providerInfo.name ?? activeProvider)
+        : endpointUrlRef.current
       writeLine(`\x1b[32mApplied: ${appliedTo} | ${currentModel}\x1b[0m`)
       if (connected) {
         writeLine('\x1b[32m✓ 연결되었습니다\x1b[0m')
@@ -204,7 +216,16 @@ export function AITerminal() {
     isProcessingRef.current = true
     term.writeln('')
 
-    // ── 진행 중 인디케이터 (타이프라이터 효과, 15ms/글자) ──────────
+    // ── 1. 서버에 즉시 요청 → 청크는 애니메이션 완료까지 버퍼링 ──
+    const chunkBuffer: string[] = []
+    let animationDone = false
+    const analyzePromise = ai.analyzeLast((chunk) => {
+      if (!isProcessingRef.current) return
+      if (animationDone) term.write(chunk)
+      else chunkBuffer.push(chunk)
+    })
+
+    // ── 2. 타이프라이터 배너 (서버 요청과 병렬) ────────────────────
     const thinkingMessages = [
       'AI가 지식의 바다를 헤엄치는 중! 잠시 후 최선의 답변을 가져다 드릴게요...',
       'AI 뉴런들이 전속력으로 달리는 중! 최고의 답변을 향해 질주하고 있습니다...',
@@ -225,6 +246,7 @@ export function AITerminal() {
       { text: ' ----------------------------------------------------------------------------', color: '\x1b[2;36m' },
     ]
     for (const { text, color } of indicatorLines) {
+      if (!isProcessingRef.current) break
       term.write(color)
       for (const char of text) {
         if (!isProcessingRef.current) break
@@ -234,12 +256,17 @@ export function AITerminal() {
       term.write('\x1b[0m')
       if (isProcessingRef.current) term.write('\r\n')
     }
-    term.write('\r\n')
+    if (isProcessingRef.current) term.write('\r\n')
 
+    // ── 3. 버퍼 flush → 이후 청크는 onChunk에서 직접 출력 ─────────
+    animationDone = true
+    for (const chunk of chunkBuffer) {
+      if (isProcessingRef.current) term.write(chunk)
+    }
+
+    // ── 4. 분석 완료 대기 ────────────────────────────────────────
     try {
-      const result = await ai.analyzeLast((chunk) => {
-        term.write(chunk)
-      })
+      const result = await analyzePromise
       term.writeln('')
       if (!result.content.trim()) {
         writeLine('\x1b[33mSSH 터미널에서 명령어를 실행한 후 다시 시도하세요.\x1b[0m')
@@ -349,7 +376,16 @@ export function AITerminal() {
       return
     }
 
-    // ── 진행 중 인디케이터 (타이프라이터 효과, 15ms/글자) ──────────
+    // ── 1. 서버에 즉시 요청 → 청크는 애니메이션 완료까지 버퍼링 ──
+    const chunkBuffer: string[] = []
+    let animationDone = false
+    const streamPromise = ai.stream(message, (chunk) => {
+      if (!isProcessingRef.current) return
+      if (animationDone) term.write(chunk)
+      else chunkBuffer.push(chunk)
+    })
+
+    // ── 2. 타이프라이터 배너 (서버 요청과 병렬) ────────────────────
     const thinkingMessages = [
       'AI가 지식의 바다를 헤엄치는 중! 잠시 후 최선의 답변을 가져다 드릴게요...',
       'AI 뉴런들이 전속력으로 달리는 중! 최고의 답변을 향해 질주하고 있습니다...',
@@ -370,6 +406,7 @@ export function AITerminal() {
       { text: ' ----------------------------------------------------------------------------', color: '\x1b[2;36m' },
     ]
     for (const { text, color } of indicatorLines) {
+      if (!isProcessingRef.current) break
       term.write(color)
       for (const char of text) {
         if (!isProcessingRef.current) break
@@ -379,12 +416,17 @@ export function AITerminal() {
       term.write('\x1b[0m')
       if (isProcessingRef.current) term.write('\r\n')
     }
-    term.write('\r\n')
+    if (isProcessingRef.current) term.write('\r\n')
 
+    // ── 3. 버퍼 flush → 이후 청크는 onChunk에서 직접 출력 ─────────
+    animationDone = true
+    for (const chunk of chunkBuffer) {
+      if (isProcessingRef.current) term.write(chunk)
+    }
+
+    // ── 4. 스트림 완료 대기 ──────────────────────────────────────
     try {
-      const response = await ai.stream(message, (chunk) => {
-        term.write(chunk)
-      })
+      const response = await streamPromise
       term.writeln('')
       if (!response.content.trim()) {
         term.writeln('\x1b[33mNo content returned.\x1b[0m')
@@ -440,12 +482,15 @@ export function AITerminal() {
         try {
           const connected = await loadEngineState(false)
           const state = await ai.state().catch(() => null)
+          const provResult = await ai.providers().catch(() => null)
           const provider = state?.provider || 'ollama'
           const model = state?.model || DEFAULT_MODEL
-          const endpoint = provider === 'gemini'
-            ? 'Google Gemini API'
+          const providerInfo = provResult?.providers?.find(p => p.id === provider)
+          const isApiKeyProvider = providerInfo?.requiresApiKey ?? false
+          const endpoint = isApiKeyProvider
+            ? `${providerInfo?.name ?? provider} API`
             : (state?.baseUrl || endpointUrlRef.current)
-          term.writeln(`\x1b[36m├─ Provider : ${provider === 'gemini' ? 'Google Gemini' : 'Ollama'}\x1b[0m`)
+          term.writeln(`\x1b[36m├─ Provider : ${providerInfo?.name ?? provider}\x1b[0m`)
           term.writeln(`\x1b[36m├─ Endpoint : ${endpoint}\x1b[0m`)
           term.writeln(`\x1b[36m├─ Model    : ${model}\x1b[0m`)
           if (connected) {
@@ -525,7 +570,10 @@ export function AITerminal() {
             inputBufferRef.current += text
           }
         })
-        .catch(() => {})
+        .catch(() => {
+          term.writeln('\r\n\x1b[33m⚠ 클립보드 권한 없음. Ctrl+V를 사용하세요.\x1b[0m')
+          writePrompt()
+        })
     }
     containerEl?.addEventListener('contextmenu', handleContextMenu)
 
@@ -546,8 +594,11 @@ export function AITerminal() {
         const serverEp = state.baseUrl || endpointUrlRef.current
         const provider = state.provider || 'ollama'
         setIsConfigured(state.isConfigured)
-        const statusMsg = provider === 'gemini'
-          ? (state.isConfigured ? 'Gemini Ready' : 'Gemini: API Key 없음')
+        const provInfo = providersRef.current.find(p => p.id === provider)
+        const isApiKey = provInfo?.requiresApiKey ?? false
+        const provLabel = provInfo?.name ?? provider
+        const statusMsg = isApiKey
+          ? (state.isConfigured ? `${provLabel} Ready` : `${provLabel}: API Key 없음`)
           : (state.isConfigured ? `Ready on ${serverEp}` : `Offline at ${serverEp}`)
         setStatusMessage(statusMsg)
       } catch {
@@ -573,7 +624,9 @@ export function AITerminal() {
     inputBufferRef.current = ''
   }
 
-  const isGemini = activeProvider === 'gemini'
+  const currentProviderInfo = providers.find(p => p.id === activeProvider)
+  const requiresApiKey = currentProviderInfo?.requiresApiKey ?? false
+  const providerDisplayName = currentProviderInfo?.name ?? activeProvider
 
   // ── 렌더 ───────────────────────────────────────────────────
   return (
@@ -585,12 +638,12 @@ export function AITerminal() {
             <>
               <span className="status-badge connected">Ready</span>
               <span className="status-info">
-                {isGemini ? 'Gemini' : engineName} | {currentModel}
+                {requiresApiKey ? providerDisplayName : engineName} | {currentModel}
               </span>
             </>
           ) : (
             <span className="status-badge disconnected">
-              {isGemini ? 'Gemini Offline' : 'Ollama Offline'}
+              {requiresApiKey ? `${providerDisplayName} Offline` : 'Ollama Offline'}
             </span>
           )}
           {isStreaming && <span className="status-badge streaming">Generating</span>}
@@ -638,14 +691,14 @@ export function AITerminal() {
             </div>
 
             {/* ── Ollama: Endpoint / Gemini: API Key ─────────── */}
-            {isGemini ? (
+            {requiresApiKey ? (
               <div className="form-group">
-                <label>Gemini API Key</label>
+                <label>{providerDisplayName} API Key</label>
                 <input
                   type="password"
                   value={apiKey}
                   onChange={(e) => { setApiKey(e.target.value); setIsDirty(true); setIsApplySuccess(false) }}
-                  placeholder="AIza..."
+                  placeholder={activeProvider === 'gemini' ? 'AIza...' : 'sk-ant-...'}
                   autoComplete="off"
                 />
               </div>

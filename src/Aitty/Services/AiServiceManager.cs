@@ -2,14 +2,15 @@ namespace Aitty.Services;
 
 /// <summary>
 /// AI 서비스 제공자를 관리하고 전환하는 매니저.
-/// 현재 지원: ollama, gemini
-/// 추후 확장: openai, anthropic 등 IAiService 구현체 추가만 하면 됨.
+/// 현재 지원: ollama, gemini, claude
+/// 추후 확장: openai 등 IAiService 구현체 추가만 하면 됨.
 /// API 키 암호화는 추후 단계에서 적용 예정.
 /// </summary>
 public class AiServiceManager : IDisposable
 {
     private readonly LocalLlmService _ollamaService;
     private readonly GeminiService _geminiService;
+    private readonly ClaudeApiService _claudeService;
 
     // API 키 임시 저장 (평문 - 암호화는 추후 단계에서 적용)
     private readonly Dictionary<string, string> _apiKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -20,6 +21,7 @@ public class AiServiceManager : IDisposable
     {
         _ollamaService = new LocalLlmService();
         _geminiService = new GeminiService();
+        _claudeService = new ClaudeApiService();
     }
 
     /// <summary>현재 활성 제공자 이름</summary>
@@ -29,6 +31,7 @@ public class AiServiceManager : IDisposable
     public IAiService Active => _activeProvider switch
     {
         "gemini" => _geminiService,
+        "claude" => _claudeService,
         _ => _ollamaService
     };
 
@@ -37,13 +40,14 @@ public class AiServiceManager : IDisposable
 
     // ── 제공자 전환 ───────────────────────────────────────── //
 
-    /// <summary>제공자 전환. 지원값: "ollama" | "gemini"</summary>
+    /// <summary>제공자 전환. 지원값: "ollama" | "gemini" | "claude"</summary>
     public void SwitchProvider(string provider)
     {
         var normalized = provider.ToLowerInvariant();
         _activeProvider = normalized switch
         {
             "gemini" => "gemini",
+            "claude" => "claude",
             _ => "ollama"
         };
     }
@@ -57,8 +61,11 @@ public class AiServiceManager : IDisposable
         _apiKeys[normalized] = apiKey;
 
         // 서비스에 즉시 반영
-        if (normalized == "gemini")
-            _geminiService.SetApiKey(apiKey);
+        switch (normalized)
+        {
+            case "gemini": _geminiService.SetApiKey(apiKey); break;
+            case "claude": _claudeService.SetApiKey(apiKey); break;
+        }
     }
 
     /// <summary>API 키 보유 여부</summary>
@@ -70,6 +77,7 @@ public class AiServiceManager : IDisposable
     public string GetProviderStatus(string provider) => provider.ToLowerInvariant() switch
     {
         "gemini" => HasApiKey("gemini") ? "configured" : "no-api-key",
+        "claude" => HasApiKey("claude") ? "configured" : "no-api-key",
         "ollama" => "local",
         _ => "unknown"
     };
@@ -79,11 +87,13 @@ public class AiServiceManager : IDisposable
     [
         new { id = "ollama", name = "Ollama (Local)", status = GetProviderStatus("ollama"), requiresApiKey = false },
         new { id = "gemini", name = "Google Gemini", status = GetProviderStatus("gemini"), requiresApiKey = true },
+        new { id = "claude", name = "Anthropic Claude", status = GetProviderStatus("claude"), requiresApiKey = true },
     ];
 
     public void Dispose()
     {
         _ollamaService.Dispose();
         _geminiService.Dispose();
+        _claudeService.Dispose();
     }
 }
