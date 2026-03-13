@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.IO;
 using Microsoft.Web.WebView2.Wpf;
 using Microsoft.Web.WebView2.Core;
 using Aitty.Models;
@@ -88,6 +89,7 @@ public class IpcHandler
             "ai:history"               => HandleAiHistory(),
             "ai:clear"                 => HandleAiClear(),
             "ai:models"                => await HandleAiModels(),
+            "ai:api-log:save"          => await HandleAiApiLogSave(msg.Payload),
 
             // ── AI 제공자 관리 ────────────────────────────── //
             "ai:providers"             => HandleAiProviders(),
@@ -96,6 +98,7 @@ public class IpcHandler
 
             // ── Ollama 전용 ──────────────────────────────── //
             "ai:set-endpoint"          => HandleAiSetEndpoint(msg.Payload),
+            "ai:openwebui:diagnose"    => await HandleAiOpenWebUiDiagnose(msg.Payload),
 
             // ── SSH 분석 ─────────────────────────────────── //
             "ai:ssh:analyze"           => await HandleAiAnalyzeSsh(msg),
@@ -112,7 +115,8 @@ public class IpcHandler
     {
         var conn = DeserializePayload<SshConnection>(payload);
         var success = await _sshService.ConnectAsync(conn);
-        return new { success };
+        // 실패 시 실제 에러 메시지를 프론트에 전달
+        return new { success, error = _sshService.State.Error };
     }
 
     private object HandleSshDisconnect() { _sshService.Disconnect(); return new { success = true }; }
@@ -160,13 +164,16 @@ public class IpcHandler
         var data = DeserializePayload<AiChatRequest>(msg.Payload);
         _streamingCts = new CancellationTokenSource();
 
-        var fullContent = await _aiManager.Active.SendStreamingAsync(data.Message, chunk =>
+        var response = await _aiManager.Active.SendStreamingAsync(data.Message, chunk =>
         {
             var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:stream:chunk", Payload = new { chunk } };
             _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
         }, _streamingCts.Token);
 
-        return new { content = fullContent, done = true };
+        // Level 3 자동 로그 (fire-and-forget — 로그 실패가 주 기능에 영향 X)
+        _ = AiChatLogger.AppendAsync(_aiManager.ActiveProvider, response.Model, null, data.Message, response);
+
+        return new { content = response.Content, done = true };
     }
 
     private object HandleAiStreamCancel() { _streamingCts?.Cancel(); return new { success = true }; }
@@ -218,6 +225,24 @@ public class IpcHandler
         return new { models };
     }
 
+    private async Task<object> HandleAiApiLogSave(object? payload)
+    {
+        var data = DeserializePayload<ApiLogPayload>(payload);
+        var content = data.Content ?? string.Empty;
+
+        var logDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "ssh-ai-terminal",
+            "logs");
+        Directory.CreateDirectory(logDir);
+
+        // 일별 단일 파일에 append (연결 트레이스 + 대화 로그 통합)
+        var filePath = Path.Combine(logDir, $"api_{DateTime.Now:yyyyMMdd}.log");
+        await File.AppendAllTextAsync(filePath, content + Environment.NewLine);
+
+        return new { success = true, path = filePath };
+    }
+
     // ── AI 제공자 관리 ──────────────────────────────────────── //
 
     private object HandleAiProviders() => new { providers = _aiManager.GetProviders(), active = _aiManager.ActiveProvider };
@@ -244,6 +269,19 @@ public class IpcHandler
         return new { success = true, url = _aiManager.Ollama.CurrentBaseUrl };
     }
 
+    private async Task<object> HandleAiOpenWebUiDiagnose(object? payload)
+    {
+        string? endpoint = null;
+        if (payload is not null)
+        {
+            var data = DeserializePayload<EndpointPayload>(payload);
+            if (!string.IsNullOrWhiteSpace(data.Url))
+                endpoint = data.Url;
+        }
+
+        return await _aiManager.Ollama.DiagnoseOpenWebUiAsync(endpoint);
+    }
+
     // ── SSH 분석 ────────────────────────────────────────────── //
 
     private async Task<object> HandleAiAnalyzeSsh(IpcMessage msg)
@@ -254,13 +292,14 @@ public class IpcHandler
 
         var prompt = $"SSH last command output:\n{lastOutput}\n\nAnalyze the output, explain issues if any, and suggest the next safe action.";
 
-        var fullContent = await _aiManager.Active.SendStreamingAsync(prompt, chunk =>
+        var response = await _aiManager.Active.SendStreamingAsync(prompt, chunk =>
         {
             var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:ssh:analyze:chunk", Payload = new { chunk } };
             _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
         });
 
-        return new { content = fullContent };
+        _ = AiChatLogger.AppendAsync(_aiManager.ActiveProvider, response.Model, null, prompt, response);
+        return new { content = response.Content };
     }
 
     private async Task<object> HandleAiSuggestCommand(IpcMessage msg)
@@ -271,13 +310,14 @@ public class IpcHandler
 
         var prompt = $"Recent SSH output:\n{recentOutput}\n\nSuggest one safe next shell command only, followed by a short reason.";
 
-        var fullContent = await _aiManager.Active.SendStreamingAsync(prompt, chunk =>
+        var response = await _aiManager.Active.SendStreamingAsync(prompt, chunk =>
         {
             var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:ssh:suggest:chunk", Payload = new { chunk } };
             _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
         });
 
-        return new { content = fullContent };
+        _ = AiChatLogger.AppendAsync(_aiManager.ActiveProvider, response.Model, null, prompt, response);
+        return new { content = response.Content };
     }
 
     private static object GetAppVersion()
@@ -312,3 +352,4 @@ internal class SystemPromptPayload { public string? SystemPrompt { get; set; } }
 internal class EndpointPayload     { public string Url        { get; set; } = string.Empty; }
 internal class ProviderPayload     { public string Provider   { get; set; } = string.Empty; }
 internal class ApiKeyPayload       { public string Provider   { get; set; } = string.Empty; public string ApiKey { get; set; } = string.Empty; }
+internal class ApiLogPayload       { public string Content    { get; set; } = string.Empty; }

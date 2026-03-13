@@ -18,6 +18,9 @@ export interface SSHTerminalProps {
 }
 
 const POLL_INTERVAL = 100 // ms
+const DEFAULT_SSH_HOST = import.meta.env.VITE_DEFAULT_SSH_HOST || ''
+const DEFAULT_SSH_PORT = import.meta.env.VITE_DEFAULT_SSH_PORT || '22'
+const DEFAULT_SSH_USERNAME = import.meta.env.VITE_DEFAULT_SSH_USERNAME || ''
 
 export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconnect, autoConnect = false }: SSHTerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null)
@@ -31,9 +34,9 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
   const shellWriteRef = useRef(shellWrite)
   const [showConnectForm, setShowConnectForm] = useState(true)
   const [formData, setFormData] = useState({
-    host: '172.16.1.103',
-    port: '22',
-    username: 'ds',
+    host: DEFAULT_SSH_HOST,
+    port: DEFAULT_SSH_PORT,
+    username: DEFAULT_SSH_USERNAME,
     password: '',
     privateKey: '',
   })

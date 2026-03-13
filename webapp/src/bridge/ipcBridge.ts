@@ -135,6 +135,19 @@ export interface AiProvidersResponse {
   active: string
 }
 
+export interface OpenWebUiDiagnosis {
+  success: boolean
+  baseUrl: string
+  isOpenWebUi: boolean
+  modelsCount: number
+  logs: string[]
+}
+
+export interface ApiLogSaveResult {
+  success: boolean
+  path: string
+}
+
 export const ai = {
   send: (message: string) => invoke<AiSendResponse>('ai:send', { message }),
   stream: (message: string, onChunk: StreamChunkHandler) => {
@@ -160,6 +173,8 @@ export const ai = {
   setModel: (model: string) => invoke<{ success: boolean; model: string }>('ai:set-model', { model }),
   setSystem: (systemPrompt: string | null) => invoke<{ success: boolean }>('ai:set-system', { systemPrompt }),
   setEndpoint: (url: string) => invoke<{ success: boolean; url: string }>('ai:set-endpoint', { url }),
+  openWebUiDiagnose: (url?: string) => invoke<OpenWebUiDiagnosis>('ai:openwebui:diagnose', { url: url ?? '' }),
+  saveApiLog: (content: string) => invoke<ApiLogSaveResult>('ai:api-log:save', { content }),
   state: () => invoke<AiState>('ai:state'),
   history: () => invoke<{ messages: Array<{ role: string; content: string }> }>('ai:history'),
   clear: () => invoke<{ success: boolean }>('ai:clear'),

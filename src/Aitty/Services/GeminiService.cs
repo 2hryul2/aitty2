@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Text;
@@ -62,9 +63,20 @@ public class GeminiService : IAiService
 
     // ── 가용성 확인 ───────────────────────────────────────── //
 
-    // API 키 설정 여부로만 판단 (별도 API 호출 없음 - 쿼터 절약)
-    public Task<bool> IsEngineAvailableAsync(CancellationToken ct = default)
-        => Task.FromResult(IsConfigured);
+    // 실제 API 호출로 유효성 확인 (잘못된 키 false)
+    public async Task<bool> IsEngineAvailableAsync(CancellationToken ct = default)
+    {
+        if (!IsConfigured) return false;
+        try
+        {
+            using var response = await _httpClient.GetAsync($"{BaseUrl}/models?key={_apiKey}", ct);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     // ── 모델 목록 ─────────────────────────────────────────── //
 
@@ -79,7 +91,8 @@ public class GeminiService : IAiService
         try
         {
             using var response = await _httpClient.GetAsync($"{BaseUrl}/models?key={_apiKey}", ct);
-            if (!response.IsSuccessStatusCode) return _cachedModels ?? DefaultModels.ToList();
+            if (!response.IsSuccessStatusCode)
+                return _cachedModels ?? [];
 
             var json = await response.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
@@ -105,13 +118,13 @@ public class GeminiService : IAiService
                 }
             }
 
-            _cachedModels = models.Count > 0 ? models : DefaultModels.ToList();
+            _cachedModels = models.Count > 0 ? models : [];
             _modelsCachedAt = DateTime.UtcNow;
             return _cachedModels;
         }
         catch
         {
-            return _cachedModels ?? DefaultModels.ToList();
+            return _cachedModels ?? [];
         }
     }
 
@@ -142,10 +155,12 @@ public class GeminiService : IAiService
 
     // ── SSE 스트리밍 전송 (429 자동 재시도 포함) ─────────────── //
 
-    public async Task<string> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default)
+    public async Task<AiChatResponse> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default)
     {
         if (!IsConfigured)
             throw new InvalidOperationException("Gemini API 키가 설정되지 않았습니다.");
+
+        var sw = Stopwatch.StartNew();
 
         // 이력 추가 (최종 실패 시 롤백)
         var historyIndex = _history.Count;
@@ -158,8 +173,18 @@ public class GeminiService : IAiService
             try
             {
                 var fullContent = await DoStreamAsync(onChunk, ct);
+                sw.Stop();
                 _history.Add(new AiChatMessage { Role = "assistant", Content = fullContent });
-                return fullContent; // 성공 → 즉시 반환
+
+                return new AiChatResponse
+                {
+                    Content      = fullContent,
+                    Model        = _model,
+                    InputTokens  = 0,
+                    OutputTokens = 0,
+                    FinishReason = "stop",
+                    DurationMs   = sw.ElapsedMilliseconds,
+                };
             }
             catch (Exception ex)
             {

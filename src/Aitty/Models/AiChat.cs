@@ -20,6 +20,8 @@ public class AiChatResponse
     public string Model { get; set; } = string.Empty;
     public int InputTokens { get; set; }
     public int OutputTokens { get; set; }
+    public string FinishReason { get; set; } = "stop";
+    public long DurationMs { get; set; }
 }
 
 public class AiConfig

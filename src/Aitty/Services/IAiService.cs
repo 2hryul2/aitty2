@@ -20,5 +20,5 @@ public interface IAiService : IDisposable
     Task<bool> IsEngineAvailableAsync(CancellationToken ct = default);
     Task<List<string>> ListModelsAsync(CancellationToken ct = default);
     Task<AiChatResponse> SendMessageAsync(string userMessage, CancellationToken ct = default);
-    Task<string> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default);
+    Task<AiChatResponse> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default);
 }

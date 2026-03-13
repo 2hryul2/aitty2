@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -19,7 +20,7 @@ public class LocalLlmService : IAiService
     // Ollama /api/generate context 토큰 (대화 연속성 유지)
     private long[]? _context;
 
-    private string _baseUrl = "http://172.16.1.103:11434";
+    private string _baseUrl = GetDefaultBaseUrl();
     private string _model = "qwen2.5-coder:7b";
     private string? _systemPrompt = "You are a local Linux SSH assistant. Analyze terminal output, explain issues, and suggest safe next commands. Prefer minimal-risk commands first.";
 
@@ -124,10 +125,11 @@ public class LocalLlmService : IAiService
 
     // ── 스트리밍 메시지 전송 ──────────────────────────────── //
 
-    public async Task<string> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default)
+    public async Task<AiChatResponse> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default)
     {
         _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
 
+        var sw = Stopwatch.StartNew();
         var requestBody = BuildGenerateRequest(userMessage, stream: true);
         var json = JsonSerializer.Serialize(requestBody);
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/generate")
@@ -169,9 +171,19 @@ public class LocalLlmService : IAiService
             }
         }
 
+        sw.Stop();
         var fullContent = builder.ToString();
         _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = fullContent });
-        return fullContent;
+
+        return new AiChatResponse
+        {
+            Content      = fullContent,
+            Model        = _model,
+            InputTokens  = 0,
+            OutputTokens = 0,
+            FinishReason = "stop",
+            DurationMs   = sw.ElapsedMilliseconds,
+        };
     }
 
     // ── SSH 분석 / 명령 제안 ──────────────────────────────── //
@@ -204,6 +216,131 @@ public class LocalLlmService : IAiService
         GC.SuppressFinalize(this);
     }
 
+    // ── Open WebUI / Ollama 진단 로그 ────────────────────── //
+
+    public async Task<OpenWebUiDiagnosisResult> DiagnoseOpenWebUiAsync(string? endpoint = null, CancellationToken ct = default)
+    {
+        var baseUrl = string.IsNullOrWhiteSpace(endpoint) ? _baseUrl : NormalizeBaseUrl(endpoint);
+        var logs = new List<string>();
+
+        static string Short(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return "(empty)";
+            var oneLine = s.Replace("\r", " ").Replace("\n", " ").Trim();
+            return oneLine.Length > 220 ? oneLine[..220] + "..." : oneLine;
+        }
+
+        static string Stamp() => DateTime.Now.ToString("HH:mm:ss.fff");
+        void Log(string message) => logs.Add($"[{Stamp()}] {message}");
+
+        Log($"baseUrl={baseUrl}");
+
+        var isOpenWebUi = false;
+        var modelsCount = 0;
+        var okCount = 0;
+
+        async Task ProbeGet(string route, Func<string, Task>? onSuccess = null)
+        {
+            var url = $"{baseUrl}{route}";
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                using var response = await _httpClient.GetAsync(url, ct);
+                var body = await response.Content.ReadAsStringAsync(ct);
+                sw.Stop();
+
+                Log($"GET {url} -> {(int)response.StatusCode} {response.ReasonPhrase} ({sw.ElapsedMilliseconds}ms)");
+                Log($"RESP {route}: {Short(body)}");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    okCount++;
+                    if (onSuccess is not null) await onSuccess(body);
+                }
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                Log($"GET {route} -> ERROR ({sw.ElapsedMilliseconds}ms): {ex.Message}");
+            }
+        }
+
+        async Task ProbePostJson(string route, string jsonBody, Func<string, Task>? onSuccess = null)
+        {
+            var url = $"{baseUrl}{route}";
+            var sw = Stopwatch.StartNew();
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Post, url)
+                {
+                    Content = new StringContent(jsonBody, Encoding.UTF8, "application/json")
+                };
+                Log($"REQ POST {url}: {Short(jsonBody)}");
+
+                using var response = await _httpClient.SendAsync(req, ct);
+                var body = await response.Content.ReadAsStringAsync(ct);
+                sw.Stop();
+
+                Log($"POST {url} -> {(int)response.StatusCode} {response.ReasonPhrase} ({sw.ElapsedMilliseconds}ms)");
+                Log($"RESP {route}: {Short(body)}");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    okCount++;
+                    if (onSuccess is not null) await onSuccess(body);
+                }
+            }
+            catch (Exception ex)
+            {
+                sw.Stop();
+                Log($"POST {url} -> ERROR ({sw.ElapsedMilliseconds}ms): {ex.Message}");
+            }
+        }
+
+        await ProbeGet("/api/version", body =>
+        {
+            var lower = body.ToLowerInvariant();
+            if (lower.Contains("open webui") || lower.Contains("open-webui"))
+                isOpenWebUi = true;
+            return Task.CompletedTask;
+        });
+
+        await ProbeGet("/api/tags", body =>
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("models", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                    modelsCount = arr.GetArrayLength();
+            }
+            catch { /* ignored */ }
+            return Task.CompletedTask;
+        });
+
+        await ProbeGet("/api/models", body =>
+        {
+            var lower = body.ToLowerInvariant();
+            if (lower.Contains("open webui") || lower.Contains("open-webui"))
+                isOpenWebUi = true;
+            return Task.CompletedTask;
+        });
+
+        var showBody = JsonSerializer.Serialize(new { model = _model });
+        await ProbePostJson("/api/show", showBody);
+
+        var success = okCount > 0;
+        Log($"summary: success={success}, okCount={okCount}, modelsCount={modelsCount}, isOpenWebUi={isOpenWebUi}");
+
+        return new OpenWebUiDiagnosisResult
+        {
+            Success = success,
+            BaseUrl = baseUrl,
+            IsOpenWebUi = isOpenWebUi,
+            ModelsCount = modelsCount,
+            Logs = logs
+        };
+    }
+
     // ── 요청 빌더 ─────────────────────────────────────────── //
 
     private object BuildGenerateRequest(string prompt, bool stream)
@@ -218,4 +355,21 @@ public class LocalLlmService : IAiService
             options = new { temperature = 0.2 }
         };
     }
+
+    private static string GetDefaultBaseUrl()
+    {
+        var fromEnv = Environment.GetEnvironmentVariable("AITTY_OLLAMA_ENDPOINT");
+        return string.IsNullOrWhiteSpace(fromEnv) ? "http://127.0.0.1:11434" : NormalizeBaseUrl(fromEnv);
+    }
+
+    private static string NormalizeBaseUrl(string url) => url.Trim().TrimEnd('/');
+}
+
+public class OpenWebUiDiagnosisResult
+{
+    public bool Success { get; set; }
+    public string BaseUrl { get; set; } = string.Empty;
+    public bool IsOpenWebUi { get; set; }
+    public int ModelsCount { get; set; }
+    public List<string> Logs { get; set; } = new();
 }

@@ -55,6 +55,18 @@ dotnet run --project .\src\Aitty\Aitty.csproj
 
 In `DEBUG`, the WPF app loads the frontend from `http://localhost:5173` inside WebView2.
 
+## Environment Variables
+
+Use `.env.example` as reference.
+
+- Frontend build-time defaults (`VITE_*`)
+  - `VITE_DEFAULT_SSH_HOST`
+  - `VITE_DEFAULT_SSH_PORT`
+  - `VITE_DEFAULT_SSH_USERNAME`
+  - `VITE_DEFAULT_OLLAMA_ENDPOINT`
+- Backend runtime default
+  - `AITTY_OLLAMA_ENDPOINT`
+
 ## Current UI
 
 The app currently renders:
@@ -112,11 +124,14 @@ dotnet build .\src\Aitty\Aitty.csproj
 
 Before any release or deployment build, explicit user confirmation must be obtained first.
 
+## Security Note
+
+SSH `password` and `passphrase` are not persisted to config storage. Only non-secret connection metadata is saved.
+
 ## Known Issues
 
 - The previous README described the repository like a root-level Node app, which was incorrect.
 - Production packaging flow is not fully documented yet.
-- Electron-related scripts still exist in `webapp/package.json`, but the active desktop host is WPF.
 
 ## Repository Layout
 

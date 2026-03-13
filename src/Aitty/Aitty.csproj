@@ -22,4 +22,18 @@
     </Content>
   </ItemGroup>
 
+  <!-- dotnet build/publish 전 React 자동 빌드 + wwwroot 동기화 -->
+  <Target Name="BuildReactApp" BeforeTargets="BeforeBuild" Condition="Exists('$(MSBuildThisFileDirectory)..\..\webapp\package.json')">
+    <PropertyGroup>
+      <WebappDir>$(MSBuildThisFileDirectory)..\..\webapp</WebappDir>
+      <WwwrootDir>$(MSBuildThisFileDirectory)wwwroot</WwwrootDir>
+    </PropertyGroup>
+
+    <Message Text="[Aitty] npm run build → $(WebappDir)" Importance="high" />
+    <Exec Command="npm run build" WorkingDirectory="$(WebappDir)" />
+
+    <Message Text="[Aitty] dist → wwwroot 동기화" Importance="high" />
+    <Exec Command="robocopy &quot;$(WebappDir)\dist&quot; &quot;$(WwwrootDir)&quot; /MIR /NJH /NJS /NDL /NC /NS" IgnoreExitCode="true" />
+  </Target>
+
 </Project>

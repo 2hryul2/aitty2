@@ -2,8 +2,7 @@ namespace Aitty.Services;
 
 /// <summary>
 /// AI 서비스 제공자를 관리하고 전환하는 매니저.
-/// 현재 지원: ollama, gemini, claude
-/// 추후 확장: openai 등 IAiService 구현체 추가만 하면 됨.
+/// 현재 지원: ollama, gemini, claude, openai
 /// API 키 암호화는 추후 단계에서 적용 예정.
 /// </summary>
 public class AiServiceManager : IDisposable
@@ -11,6 +10,7 @@ public class AiServiceManager : IDisposable
     private readonly LocalLlmService _ollamaService;
     private readonly GeminiService _geminiService;
     private readonly ClaudeApiService _claudeService;
+    private readonly OpenAiService _openAiService;
 
     // API 키 임시 저장 (평문 - 암호화는 추후 단계에서 적용)
     private readonly Dictionary<string, string> _apiKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -19,9 +19,10 @@ public class AiServiceManager : IDisposable
 
     public AiServiceManager()
     {
-        _ollamaService = new LocalLlmService();
-        _geminiService = new GeminiService();
-        _claudeService = new ClaudeApiService();
+        _ollamaService  = new LocalLlmService();
+        _geminiService  = new GeminiService();
+        _claudeService  = new ClaudeApiService();
+        _openAiService  = new OpenAiService();
     }
 
     /// <summary>현재 활성 제공자 이름</summary>
@@ -32,6 +33,7 @@ public class AiServiceManager : IDisposable
     {
         "gemini" => _geminiService,
         "claude" => _claudeService,
+        "openai" => _openAiService,
         _ => _ollamaService
     };
 
@@ -40,7 +42,7 @@ public class AiServiceManager : IDisposable
 
     // ── 제공자 전환 ───────────────────────────────────────── //
 
-    /// <summary>제공자 전환. 지원값: "ollama" | "gemini" | "claude"</summary>
+    /// <summary>제공자 전환. 지원값: "ollama" | "gemini" | "claude" | "openai"</summary>
     public void SwitchProvider(string provider)
     {
         var normalized = provider.ToLowerInvariant();
@@ -48,6 +50,7 @@ public class AiServiceManager : IDisposable
         {
             "gemini" => "gemini",
             "claude" => "claude",
+            "openai" => "openai",
             _ => "ollama"
         };
     }
@@ -65,6 +68,7 @@ public class AiServiceManager : IDisposable
         {
             case "gemini": _geminiService.SetApiKey(apiKey); break;
             case "claude": _claudeService.SetApiKey(apiKey); break;
+            case "openai": _openAiService.SetApiKey(apiKey); break;
         }
     }
 
@@ -78,6 +82,7 @@ public class AiServiceManager : IDisposable
     {
         "gemini" => HasApiKey("gemini") ? "configured" : "no-api-key",
         "claude" => HasApiKey("claude") ? "configured" : "no-api-key",
+        "openai" => HasApiKey("openai") ? "configured" : "no-api-key",
         "ollama" => "local",
         _ => "unknown"
     };
@@ -85,9 +90,10 @@ public class AiServiceManager : IDisposable
     /// <summary>지원 제공자 목록과 상태</summary>
     public object[] GetProviders() =>
     [
-        new { id = "ollama", name = "Ollama (Local)", status = GetProviderStatus("ollama"), requiresApiKey = false },
-        new { id = "gemini", name = "Google Gemini", status = GetProviderStatus("gemini"), requiresApiKey = true },
-        new { id = "claude", name = "Anthropic Claude", status = GetProviderStatus("claude"), requiresApiKey = true },
+        new { id = "ollama", name = "API 접속",             status = GetProviderStatus("ollama"), requiresApiKey = false },
+        new { id = "gemini", name = "Google Gemini",      status = GetProviderStatus("gemini"), requiresApiKey = true  },
+        new { id = "claude", name = "Anthropic Claude",   status = GetProviderStatus("claude"), requiresApiKey = true  },
+        new { id = "openai", name = "OpenAI",             status = GetProviderStatus("openai"), requiresApiKey = true  },
     ];
 
     public void Dispose()
@@ -95,5 +101,6 @@ public class AiServiceManager : IDisposable
         _ollamaService.Dispose();
         _geminiService.Dispose();
         _claudeService.Dispose();
+        _openAiService.Dispose();
     }
 }

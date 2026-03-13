@@ -8,7 +8,8 @@ import { logger } from '@utils/logger'
 
 const DEFAULT_MODEL = 'qwen2.5-coder:7b'
 const DEFAULT_SYSTEM_PROMPT = 'You are a local Linux SSH assistant. Analyze terminal output, explain issues, and suggest safe next commands. Prefer minimal-risk commands first.'
-const DEFAULT_ENDPOINT = 'http://172.16.1.103:11434'
+const DEFAULT_ENDPOINT = import.meta.env.VITE_DEFAULT_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434'
+let startupTracePrinted = false
 
 function isWebView2(): boolean {
   return !!window.chrome?.webview
@@ -20,6 +21,10 @@ export function AITerminal() {
   const fitAddonRef = useRef<FitAddon | null>(null)
   const inputBufferRef = useRef('')
   const isProcessingRef = useRef(false)
+  const sendMessageRef = useRef<(message: string) => Promise<void>>(async () => {})
+  const handleBuiltinCommandRef = useRef<(command: string) => Promise<boolean>>(async () => false)
+  const writePromptRef = useRef<() => void>(() => {})
+  const runDetailedConnectionTraceRef = useRef<(title: string, applyConfig: boolean) => Promise<boolean>>(async () => false)
 
   // endpointUrl을 ref로도 관리 → loadEngineState deps에서 제거
   const endpointUrlRef = useRef(DEFAULT_ENDPOINT)
@@ -41,11 +46,27 @@ export function AITerminal() {
   // ── 제공자 관련 상태 ────────────────────────────────────────
   const [activeProvider, setActiveProvider] = useState<string>('ollama')
   const [apiKey, setApiKey] = useState('')
-  const [providers, setProviders] = useState<AiProvider[]>([])
+  const [providers, setProviders] = useState<AiProvider[]>([
+    { id: 'ollama', name: 'API 접속',        status: 'local',      requiresApiKey: false },
+    { id: 'gemini', name: 'Google Gemini',   status: 'no-api-key', requiresApiKey: true  },
+    { id: 'claude', name: 'Anthropic Claude',status: 'no-api-key', requiresApiKey: true  },
+    { id: 'openai', name: 'OpenAI',          status: 'no-api-key', requiresApiKey: true  },
+  ])
+  const [saveApiLog, setSaveApiLog] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('aitty.saveApiLog')
+      return stored === null ? true : stored === '1'
+    } catch {
+      return true
+    }
+  })
 
   // providers 상태를 setInterval 클로저에서 안전하게 참조하기 위한 ref
   const providersRef = useRef<typeof providers>([])
   useEffect(() => { providersRef.current = providers }, [providers])
+  useEffect(() => {
+    try { localStorage.setItem('aitty.saveApiLog', saveApiLog ? '1' : '0') } catch { /* ignore */ }
+  }, [saveApiLog])
 
   const resizeRef = useTerminalResize(() => {
     if (fitAddonRef.current && termRef.current) {
@@ -123,6 +144,9 @@ export function AITerminal() {
   // ── 제공자 전환 ─────────────────────────────────────────────
   const handleProviderChange = useCallback(async (provider: string) => {
     setActiveProvider(provider)
+    setApiKey('')
+    setIsDirty(true)
+    setIsApplySuccess(false)
     if (!isWebView2()) return
     try {
       await ai.setProvider(provider)
@@ -150,28 +174,126 @@ export function AITerminal() {
   }, [writeLine, writePrompt])
 
   // ── 버튼 핸들러 ────────────────────────────────────────────
+  const runDetailedConnectionTrace = useCallback(async (title: string, applyConfig: boolean): Promise<boolean> => {
+    const traceLines: string[] = []
+    const time = () => new Date().toLocaleTimeString('ko-KR', { hour12: false })
+    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '')
+    const log = (renderText: string, plainText?: string) => {
+      writeLine(renderText)
+      traceLines.push((plainText ?? stripAnsi(renderText)).replace(/\r/g, ''))
+    }
+    const step = (n: number, total: number, text: string) =>
+      log(`\x1b[2;37m[${time()}]\x1b[0m \x1b[36m[${n}/${total}] ${text}\x1b[0m`, `[${time()}] [${n}/${total}] ${text}`)
+    const ok = (text: string) => log(`\x1b[32m   ✓ ${text}\x1b[0m`, `   ✓ ${text}`)
+    const warn = (text: string) => log(`\x1b[33m   ! ${text}\x1b[0m`, `   ! ${text}`)
+
+    log('', '')
+    log(`\x1b[1;36m=== LLM 접속 상세 로그 (${title}) ===\x1b[0m`, `=== LLM 접속 상세 로그 (${title}) ===`)
+
+    const providerInfo = providers.find(p => p.id === activeProvider)
+    const runOpenWebUiDiag = !(providerInfo?.requiresApiKey ?? false)
+    const totalSteps = runOpenWebUiDiag ? 7 : 6
+    const providerLabel = providerInfo?.name ?? activeProvider
+    const endpoint = endpointUrlRef.current
+
+    step(1, totalSteps, `Provider 선택 확인: ${providerLabel}`)
+    ok(`activeProvider=${activeProvider}`)
+
+    if (applyConfig) {
+      if (providerInfo?.requiresApiKey) {
+        step(2, totalSteps, 'API Key 구성 적용')
+        if (!apiKey.trim()) {
+          warn('API Key가 비어 있습니다.')
+        } else {
+          await ai.setApiKey(activeProvider, apiKey.trim())
+          ok('API Key 적용 완료')
+        }
+      } else {
+        step(2, totalSteps, `Ollama Endpoint 적용: ${endpoint}`)
+        await ai.setEndpoint(endpoint)
+        ok('Endpoint 적용 완료')
+      }
+    } else {
+      step(2, totalSteps, '구성 적용 단계는 건너뜀 (이미 적용됨)')
+      ok('skip')
+    }
+
+    let stepNo = 3
+    if (runOpenWebUiDiag) {
+      step(stepNo++, totalSteps, 'Open WebUI API 연동 진단')
+      const diag = await ai.openWebUiDiagnose(endpoint)
+      ok(`diagnosis: success=${diag.success}, isOpenWebUi=${diag.isOpenWebUi}, models=${diag.modelsCount}`)
+      diag.logs.forEach((line) => log(`\x1b[2;37m   ${line}\x1b[0m`, `   ${line}`))
+    }
+
+    step(stepNo++, totalSteps, '엔진 상태 조회 (ai.state)')
+    const state = await ai.state()
+    ok(`isConfigured=${state.isConfigured}, provider=${state.provider}, engine=${state.engine}`)
+
+    step(stepNo++, totalSteps, '모델 목록 조회 (ai.models)')
+    const models = await ai.models()
+    ok(`모델 ${models.models.length}개 확인`)
+
+    step(stepNo++, totalSteps, 'Provider 상태 조회 (ai.providers)')
+    const provResult = await ai.providers()
+    ok(`provider ${provResult.providers.length}개, active=${provResult.active}`)
+
+    const modelList = models.models
+    const serverEp = state.baseUrl || endpointUrlRef.current
+    const currentProvider = state.provider || activeProvider
+    const currentProviderInfo = provResult.providers.find(p => p.id === currentProvider)
+    const isApiKeyProvider = currentProviderInfo?.requiresApiKey ?? false
+    const currentProviderLabel = currentProviderInfo?.name ?? currentProvider
+    const statusMsg = isApiKeyProvider
+      ? (state.isConfigured ? `${currentProviderLabel} Ready` : `${currentProviderLabel}: API Key 없음`)
+      : (state.isConfigured ? `Ready on ${serverEp}` : `Offline at ${serverEp}`)
+    const serverModel = state.model || DEFAULT_MODEL
+    const resolvedModel = modelList.length > 0
+      ? (modelList.includes(serverModel) ? serverModel : modelList[0])
+      : serverModel
+
+    setIsConfigured(state.isConfigured)
+    setEngineName(state.engine || 'ollama')
+    setActiveProvider(currentProvider)
+    setProviders(provResult.providers)
+    setAvailableModels(modelList)
+    setStatusMessage(statusMsg)
+    setCurrentModel(resolvedModel)
+
+    step(stepNo, totalSteps, '최종 판정')
+    if (state.isConfigured) {
+      const endpointDisplay = isApiKeyProvider ? currentProviderLabel : serverEp
+      ok(`연결 성공: ${endpointDisplay} | model=${resolvedModel}`)
+    } else {
+      warn('연결 실패: 설정값 또는 엔진 상태를 확인하세요.')
+    }
+
+    log('\x1b[33mAI는 정확하지 않는 정보를 제공할 수 있습니다. 중요한 정보는 확인하세요\x1b[0m', 'AI는 정확하지 않는 정보를 제공할 수 있습니다. 중요한 정보는 확인하세요')
+
+    if (saveApiLog) {
+      try {
+        const saved = await ai.saveApiLog(traceLines.join('\n'))
+        log(`\x1b[36mAPI 로그 저장: ${saved.path}\x1b[0m`, `API 로그 저장: ${saved.path}`)
+      } catch (error) {
+        warn(`API 로그 저장 실패: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      }
+    }
+
+    return state.isConfigured
+  }, [activeProvider, apiKey, providers, saveApiLog, writeLine])
 
   const handleCheck = useCallback(async () => {
     setIsBusy(true)
     try {
-      const providerInfo = providers.find(p => p.id === activeProvider)
-      if (providerInfo?.requiresApiKey) {
-        if (apiKey.trim()) await ai.setApiKey(activeProvider, apiKey.trim())
-      } else {
-        await ai.setEndpoint(endpointUrlRef.current)
-      }
-      const connected = await loadEngineState(true)
-      if (connected) {
-        writeLine('\x1b[32m✓ 연결되었습니다\x1b[0m')
-      }
-      writeLine('\x1b[33mAI는 정확하지 않는 정보를 제공할 수 있습니다. 중요한 정보는 확인하세요\x1b[0m')
+      const connected = await runDetailedConnectionTrace('Check', true)
+      writeLine(connected ? '\x1b[32m✓ 연결되었습니다\x1b[0m' : '\x1b[31m✗ 연결 실패 - 설정을 확인하세요\x1b[0m')
     } catch (error) {
       writeLine(`\x1b[31mCheck 실패: ${error instanceof Error ? error.message : 'Unknown error'}\x1b[0m`)
     } finally {
       setIsBusy(false)
       writePrompt()
     }
-  }, [activeProvider, apiKey, loadEngineState, writeLine, writePrompt])
+  }, [runDetailedConnectionTrace, writeLine, writePrompt])
 
   const handleApplySettings = useCallback(async () => {
     setIsBusy(true)
@@ -184,7 +306,7 @@ export function AITerminal() {
       }
       await ai.setModel(currentModel)
       await ai.setSystem(systemPrompt)
-      const connected = await loadEngineState(false)
+      const connected = await runDetailedConnectionTrace('Apply', false)
       const appliedTo = providerInfo?.requiresApiKey
         ? (providerInfo.name ?? activeProvider)
         : endpointUrlRef.current
@@ -205,7 +327,7 @@ export function AITerminal() {
       setIsBusy(false)
       writePrompt()
     }
-  }, [activeProvider, apiKey, currentModel, systemPrompt, loadEngineState, writeLine, writePrompt])
+  }, [activeProvider, apiKey, currentModel, providers, runDetailedConnectionTrace, systemPrompt, writeLine, writePrompt])
 
   // AI분석: 마지막 SSH 명령어 출력만 스트리밍 분석
   const handleAnalyzeClick = useCallback(async () => {
@@ -440,6 +562,11 @@ export function AITerminal() {
     }
   }, [])
 
+  useEffect(() => { sendMessageRef.current = sendMessage }, [sendMessage])
+  useEffect(() => { handleBuiltinCommandRef.current = handleBuiltinCommand }, [handleBuiltinCommand])
+  useEffect(() => { writePromptRef.current = writePrompt }, [writePrompt])
+  useEffect(() => { runDetailedConnectionTraceRef.current = runDetailedConnectionTrace }, [runDetailedConnectionTrace])
+
   // ── xterm 초기화 ───────────────────────────────────────────
   useEffect(() => {
     if (!terminalRef.current) return
@@ -475,37 +602,28 @@ export function AITerminal() {
     term.writeln('Type \x1b[33mhelp\x1b[0m for available commands.')
 
     if (isWebView2()) {
-      // ── 초기 설정 점검 ───────────────────────────────────────
+      // ── 시작 시 상세 접속 로그 자동 출력 ───────────────────────
       ;(async () => {
-        term.writeln('')
-        term.writeln('\x1b[2;36m■ 초기 설정 점검 중...\x1b[0m')
-        try {
-          const connected = await loadEngineState(false)
-          const state = await ai.state().catch(() => null)
-          const provResult = await ai.providers().catch(() => null)
-          const provider = state?.provider || 'ollama'
-          const model = state?.model || DEFAULT_MODEL
-          const providerInfo = provResult?.providers?.find(p => p.id === provider)
-          const isApiKeyProvider = providerInfo?.requiresApiKey ?? false
-          const endpoint = isApiKeyProvider
-            ? `${providerInfo?.name ?? provider} API`
-            : (state?.baseUrl || endpointUrlRef.current)
-          term.writeln(`\x1b[36m├─ Provider : ${providerInfo?.name ?? provider}\x1b[0m`)
-          term.writeln(`\x1b[36m├─ Endpoint : ${endpoint}\x1b[0m`)
-          term.writeln(`\x1b[36m├─ Model    : ${model}\x1b[0m`)
-          if (connected) {
-            term.writeln('\x1b[32m└─ ✓ 연결 성공 | 바로 AI에게 질문하세요!\x1b[0m')
-            setIsApplySuccess(true)
-          } else {
-            term.writeln('\x1b[31m└─ ✗ 연결 실패 | [Check] 버튼으로 재시도하세요\x1b[0m')
-          }
-        } catch {
-          term.writeln('\x1b[31m└─ ✗ 초기화 실패 | 설정을 확인하세요\x1b[0m')
+        if (startupTracePrinted) {
+          writePromptRef.current()
+          return
         }
-        writePrompt()
+        startupTracePrinted = true
+        try {
+          const connected = await runDetailedConnectionTraceRef.current('Startup', false)
+          if (connected) {
+            setIsApplySuccess(true)
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '초기화 실패'
+          term.writeln(`\x1b[31m${message}\x1b[0m`)
+        } finally {
+          writePromptRef.current()
+        }
       })()
     } else {
-      writePrompt()
+      term.writeln('\x1b[33mWebView2 host not detected. 상세 접속 로그를 사용할 수 없습니다.\x1b[0m')
+      writePromptRef.current()
     }
 
     term.onData((data: string) => {
@@ -515,7 +633,7 @@ export function AITerminal() {
           isProcessingRef.current = false
           setIsStreaming(false)
           term.writeln('\r\n\x1b[33m^C Cancelled\x1b[0m')
-          writePrompt()
+          writePromptRef.current()
         }
         return
       }
@@ -523,13 +641,13 @@ export function AITerminal() {
       if (data === '\r') {
         const command = inputBufferRef.current.trim()
         inputBufferRef.current = ''
-        if (!command) { writePrompt(); return }
+        if (!command) { writePromptRef.current(); return }
 
-        handleBuiltinCommand(command).then(handled => {
+        handleBuiltinCommandRef.current(command).then(handled => {
           if (handled) {
-            writePrompt()
+            writePromptRef.current()
           } else {
-            sendMessage(command).then(() => writePrompt())
+            sendMessageRef.current(command).then(() => writePromptRef.current())
           }
         })
       } else if (data === '\u007f' || data === '\b') {
@@ -540,10 +658,10 @@ export function AITerminal() {
       } else if (data === '\x03') {
         inputBufferRef.current = ''
         term.writeln('^C')
-        writePrompt()
+        writePromptRef.current()
       } else if (data === '\x0c') {
         term.clear()
-        writePrompt()
+        writePromptRef.current()
       } else if (data.charCodeAt(0) >= 32) {
         inputBufferRef.current += data
         term.write(data)
@@ -572,7 +690,7 @@ export function AITerminal() {
         })
         .catch(() => {
           term.writeln('\r\n\x1b[33m⚠ 클립보드 권한 없음. Ctrl+V를 사용하세요.\x1b[0m')
-          writePrompt()
+          writePromptRef.current()
         })
     }
     containerEl?.addEventListener('contextmenu', handleContextMenu)
@@ -583,7 +701,7 @@ export function AITerminal() {
       containerEl?.removeEventListener('contextmenu', handleContextMenu)
       term.dispose()
     }
-  }, [handleBuiltinCommand, loadEngineState, sendMessage, writePrompt])
+  }, [])
 
   // ── AI 30초 헬스체크 ──────────────────────────────────────
   useEffect(() => {
@@ -643,7 +761,7 @@ export function AITerminal() {
             </>
           ) : (
             <span className="status-badge disconnected">
-              {requiresApiKey ? `${providerDisplayName} Offline` : 'Ollama Offline'}
+              {`${providerDisplayName} Offline`}
             </span>
           )}
           {isStreaming && <span className="status-badge streaming">Generating</span>}
@@ -676,17 +794,9 @@ export function AITerminal() {
                 onChange={(e) => handleProviderChange(e.target.value)}
                 disabled={isBusy}
               >
-                {providers.length > 0
-                  ? providers.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name}</option>
-                    ))
-                  : (
-                    <>
-                      <option value="ollama">Ollama (Local)</option>
-                      <option value="gemini">Google Gemini</option>
-                    </>
-                  )
-                }
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
               </select>
             </div>
 
@@ -698,7 +808,11 @@ export function AITerminal() {
                   type="password"
                   value={apiKey}
                   onChange={(e) => { setApiKey(e.target.value); setIsDirty(true); setIsApplySuccess(false) }}
-                  placeholder={activeProvider === 'gemini' ? 'AIza...' : 'sk-ant-...'}
+                  placeholder={
+                    activeProvider === 'gemini' ? 'AIza...' :
+                    activeProvider === 'openai' ? 'sk-...' :
+                    'sk-ant-...'
+                  }
                   autoComplete="off"
                 />
               </div>
@@ -709,7 +823,7 @@ export function AITerminal() {
                   type="text"
                   value={endpointUrl}
                   onChange={(e) => handleEndpointChange(e.target.value)}
-                  placeholder="http://172.16.1.103:11434"
+                  placeholder={DEFAULT_ENDPOINT}
                 />
               </div>
             )}
@@ -740,6 +854,14 @@ export function AITerminal() {
 
           {/* ── 버튼 행 ──────────────────────────────────────── */}
           <div className="settings-button-row">
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#9ad89a', fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={saveApiLog}
+                onChange={(e) => setSaveApiLog(e.target.checked)}
+              />
+              로그저장
+            </label>
             <button type="button" onClick={handleCheck} disabled={isBusy}>
               Check
             </button>

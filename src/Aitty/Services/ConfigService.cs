@@ -35,7 +35,11 @@ public class ConfigService
             }
 
             var json = await File.ReadAllTextAsync(_configPath);
-            return JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? CreateDefault();
+            var loaded = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? CreateDefault();
+            var sanitized = SanitizeConfig(loaded, out var changed);
+            if (changed)
+                await SaveAsync(sanitized);
+            return sanitized;
         }
         catch
         {
@@ -46,14 +50,15 @@ public class ConfigService
     public async Task SaveAsync(AppConfig config)
     {
         Directory.CreateDirectory(_configDir);
-        var json = JsonSerializer.Serialize(config, JsonOptions);
+        var sanitized = SanitizeConfig(config, out _);
+        var json = JsonSerializer.Serialize(sanitized, JsonOptions);
         await File.WriteAllTextAsync(_configPath, json);
     }
 
     public async Task AddConnectionAsync(SshConnection connection)
     {
         var config = await LoadAsync();
-        config.SshConnections.Add(connection);
+        config.SshConnections.Add(SanitizeConnection(connection));
         await SaveAsync(config);
     }
 
@@ -70,7 +75,7 @@ public class ConfigService
         var index = config.SshConnections.FindIndex(c => c.Host == host);
         if (index >= 0)
         {
-            config.SshConnections[index] = updated;
+            config.SshConnections[index] = SanitizeConnection(updated);
             await SaveAsync(config);
         }
     }
@@ -81,5 +86,38 @@ public class ConfigService
         FontSize = 12,
         FontFamily = "Consolas, \"Courier New\"",
         SshConnections = new List<SshConnection>()
+    };
+
+    private static AppConfig SanitizeConfig(AppConfig config, out bool changed)
+    {
+        changed = false;
+        var sourceConnections = config.SshConnections ?? [];
+        var sanitizedConnections = new List<SshConnection>(sourceConnections.Count);
+        foreach (var conn in sourceConnections)
+        {
+            var sanitized = SanitizeConnection(conn);
+            if (!string.IsNullOrEmpty(conn.Password) || !string.IsNullOrEmpty(conn.Passphrase))
+                changed = true;
+            sanitizedConnections.Add(sanitized);
+        }
+
+        return new AppConfig
+        {
+            Theme = config.Theme,
+            FontSize = config.FontSize,
+            FontFamily = config.FontFamily,
+            LastConnection = config.LastConnection,
+            SshConnections = sanitizedConnections
+        };
+    }
+
+    private static SshConnection SanitizeConnection(SshConnection connection) => new()
+    {
+        Host = connection.Host,
+        Port = connection.Port,
+        Username = connection.Username,
+        PrivateKey = connection.PrivateKey,
+        Password = null,
+        Passphrase = null
     };
 }

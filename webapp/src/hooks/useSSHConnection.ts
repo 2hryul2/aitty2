@@ -25,7 +25,7 @@ export function useSSHConnection() {
       })
 
       if (!result.success) {
-        throw new Error('Connection failed')
+        throw new Error(result.error || 'Connection failed')
       }
 
       setState(prev => ({

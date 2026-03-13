@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -132,11 +133,12 @@ public class ClaudeApiService : IAiService
         };
     }
 
-    public async Task<string> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default)
+    public async Task<AiChatResponse> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default)
     {
         if (!IsConfigured)
             throw new InvalidOperationException("Claude API key not configured. Use 'config set api-key <KEY>' to set it.");
 
+        var sw = Stopwatch.StartNew();
         _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
 
         var requestBody = new ClaudeRequest
@@ -168,7 +170,11 @@ public class ClaudeApiService : IAiService
             throw new HttpRequestException($"Claude API error ({response.StatusCode}): {errorDetail}");
         }
 
-        var fullContent = new StringBuilder();
+        var contentBuilder = new StringBuilder();
+        var finishReason = "stop";
+        int inputTokens  = 0;
+        int outputTokens = 0;
+
         using var stream = await response.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream);
 
@@ -176,29 +182,68 @@ public class ClaudeApiService : IAiService
         {
             var line = await reader.ReadLineAsync(ct);
             if (string.IsNullOrEmpty(line)) continue;
-
             if (!line.StartsWith("data: ")) continue;
+
             var data = line[6..];
             if (data == "[DONE]") break;
 
             try
             {
-                var sseEvent = JsonSerializer.Deserialize<ClaudeSseEvent>(data, JsonOptions);
-                if (sseEvent?.Type == "content_block_delta" && sseEvent.Delta?.Text is not null)
+                using var doc  = JsonDocument.Parse(data);
+                var root = doc.RootElement;
+                var type = root.TryGetProperty("type", out var t) ? t.GetString() : null;
+
+                switch (type)
                 {
-                    fullContent.Append(sseEvent.Delta.Text);
-                    onChunk(sseEvent.Delta.Text);
+                    // message_start: input_tokens 수집
+                    case "message_start":
+                        if (root.TryGetProperty("message", out var msg) &&
+                            msg.TryGetProperty("usage", out var startUsage))
+                            inputTokens = startUsage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
+                        break;
+
+                    // content_block_delta: 실제 텍스트 청크
+                    case "content_block_delta":
+                        if (root.TryGetProperty("delta", out var delta) &&
+                            delta.TryGetProperty("text", out var textEl) &&
+                            textEl.ValueKind == JsonValueKind.String)
+                        {
+                            var chunk = textEl.GetString();
+                            if (!string.IsNullOrEmpty(chunk))
+                            {
+                                contentBuilder.Append(chunk);
+                                onChunk(chunk);
+                            }
+                        }
+                        break;
+
+                    // message_delta: output_tokens + stop_reason 수집
+                    case "message_delta":
+                        if (root.TryGetProperty("usage", out var msgUsage))
+                            outputTokens = msgUsage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : outputTokens;
+                        if (root.TryGetProperty("delta", out var msgDelta) &&
+                            msgDelta.TryGetProperty("stop_reason", out var sr) &&
+                            sr.ValueKind == JsonValueKind.String)
+                            finishReason = sr.GetString() ?? finishReason;
+                        break;
                 }
             }
-            catch
-            {
-                // Skip malformed SSE events
-            }
+            catch { /* Skip malformed SSE events */ }
         }
 
-        var result = fullContent.ToString();
+        sw.Stop();
+        var result = contentBuilder.ToString();
         _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = result });
-        return result;
+
+        return new AiChatResponse
+        {
+            Content      = result,
+            Model        = _model,
+            InputTokens  = inputTokens,
+            OutputTokens = outputTokens,
+            FinishReason = finishReason,
+            DurationMs   = sw.ElapsedMilliseconds,
+        };
     }
 
     public void ClearHistory()
