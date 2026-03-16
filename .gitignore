@@ -54,3 +54,4 @@ src/Aitty/wwwroot/
 build.ps1
 check*.ps1
 publish*.zip
+aitty2_v*.zip
