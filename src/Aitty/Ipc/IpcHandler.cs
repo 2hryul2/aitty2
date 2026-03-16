@@ -139,7 +139,18 @@ public class IpcHandler
 
     private async Task<object> HandleSshConnect(object? payload)
     {
-        var conn = DeserializePayload<SshConnection>(payload);
+        // [M-2] 입력 전용 DTO로 역직렬화 → SshConnection.Password의 [JsonIgnore]가
+        //       역직렬화까지 차단하는 문제 방지 (직렬화 차단은 SshConnection에서 유지)
+        var req = DeserializePayload<SshConnectRequest>(payload);
+        var conn = new SshConnection
+        {
+            Host       = req.Host,
+            Port       = req.Port,
+            Username   = req.Username,
+            PrivateKey = req.PrivateKey,
+            Password   = req.Password,
+            Passphrase = req.Passphrase,
+        };
         var success = await _sshService.ConnectAsync(conn);
 
         // [M-3] 접속 감사 로그
@@ -405,6 +416,16 @@ public class IpcHandler
 
 // ── Payload DTOs ──────────────────────────────────────────── //
 // [M-1] CommandPayload: 길이 제한은 HandleSshExec에서 명시적으로 검증
+// [M-2] SSH 접속 입력 전용 DTO: Password/Passphrase 역직렬화 허용 (SshConnection은 [JsonIgnore] 유지)
+internal class SshConnectRequest
+{
+    public string  Host       { get; set; } = string.Empty;
+    public int     Port       { get; set; } = 22;
+    public string  Username   { get; set; } = string.Empty;
+    public string? PrivateKey { get; set; }
+    public string? Password   { get; set; }
+    public string? Passphrase { get; set; }
+}
 internal class CommandPayload      { public string Command    { get; set; } = string.Empty; }
 internal class ShellWritePayload   { public string Data       { get; set; } = string.Empty; }
 internal class HostPayload         { public string Host       { get; set; } = string.Empty; }
