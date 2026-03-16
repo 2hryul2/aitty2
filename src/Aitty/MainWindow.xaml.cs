@@ -1,7 +1,7 @@
-using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using Microsoft.Web.WebView2.Core;
 using Aitty.Ipc;
@@ -17,11 +17,15 @@ public partial class MainWindow : Window
     private readonly AiServiceManager _aiManager;
     private IpcHandler? _ipcHandler;
 
+    // [L-1] index.html 메모리 캐시: 앱 시작 시 1회 로드, 이후 매 요청마다 디스크 I/O 제거
+    private byte[]? _indexHtmlCache;
+
+    // [H-3] Release 빌드에서 AITTY_DEV 환경변수 우회 완전 차단
     private static bool IsDev =>
 #if DEBUG
         true;
 #else
-        Environment.GetEnvironmentVariable("AITTY_DEV") == "1";
+        false;
 #endif
 
     public MainWindow()
@@ -37,14 +41,37 @@ public partial class MainWindow : Window
 
         var exitBinding = new KeyBinding(new RelayCommand(_ => Close()), new KeyGesture(Key.Q, ModifierKeys.Control));
         InputBindings.Add(exitBinding);
+
+        // [H-2] DevTools 메뉴: Debug 빌드에서만 동적으로 추가
+#if DEBUG
+        AddDebugMenuItems();
+#endif
     }
+
+#if DEBUG
+    private void AddDebugMenuItems()
+    {
+        var devToolsItem = new MenuItem
+        {
+            Header = "Toggle _DevTools",
+            InputGestureText = "F12"
+        };
+        devToolsItem.Click += MenuDevTools_Click;
+
+        if (viewMenu is not null)
+            viewMenu.Items.Add(devToolsItem);
+    }
+
+    private void MenuDevTools_Click(object sender, RoutedEventArgs e)
+        => webView.CoreWebView2?.OpenDevToolsWindow();
+#endif
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         try
         {
             // WebView2 user data → %LOCALAPPDATA%\Aitty (빌드 간 안전)
-            var userDataFolder = Path.Combine(
+            var userDataFolder = System.IO.Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Aitty", "WebView2");
             Directory.CreateDirectory(userDataFolder);
@@ -52,7 +79,7 @@ public partial class MainWindow : Window
             var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
             await webView.EnsureCoreWebView2Async(env);
 
-            // ── 디버깅 이벤트 ─────────────────────────────────
+            // ── 이벤트 핸들러 ─────────────────────────────────
             webView.CoreWebView2.NavigationCompleted += (s, args) =>
             {
                 if (!args.IsSuccess)
@@ -76,30 +103,28 @@ public partial class MainWindow : Window
             }
             else
             {
-                var wwwroot = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+                var wwwroot = System.IO.Path.Combine(AppContext.BaseDirectory, "wwwroot");
 
-                // 1) 가상 호스트 등록 (JS/CSS/이미지 등 서빙)
+                // [L-1] index.html 메모리 캐시: 초기화 시점에 1회 로드
+                await PreloadIndexHtmlAsync(wwwroot);
+
+                // 가상 호스트 등록
                 webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                     "app.local", wwwroot,
                     CoreWebView2HostResourceAccessKind.Allow);
 
-                // 2) index.html만 가로채서 crossorigin 속성 제거
-                //    (WebView2 virtual host + module script CORS 문제 우회)
+                // index.html 요청 가로채기 — crossorigin 속성 제거 (CORS 우회)
                 webView.CoreWebView2.AddWebResourceRequestedFilter(
                     "https://app.local/index.html",
                     CoreWebView2WebResourceContext.Document);
                 webView.CoreWebView2.WebResourceRequested += (s, args) =>
                 {
-                    var indexPath = Path.Combine(wwwroot, "index.html");
-                    if (!File.Exists(indexPath)) return;
-
-                    var html = File.ReadAllText(indexPath, Encoding.UTF8);
-                    html = html.Replace(" crossorigin", "");
-                    var bytes = Encoding.UTF8.GetBytes(html);
+                    // [L-1] 캐시된 바이트 배열 사용 (디스크 I/O 없음)
+                    if (_indexHtmlCache is null) return;
 
                     args.Response = webView.CoreWebView2.Environment
                         .CreateWebResourceResponse(
-                            new MemoryStream(bytes), 200, "OK",
+                            new MemoryStream(_indexHtmlCache), 200, "OK",
                             "Content-Type: text/html; charset=utf-8");
                 };
 
@@ -113,9 +138,19 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>[L-1] index.html을 메모리에 미리 로드. crossorigin 제거 포함.</summary>
+    private async Task PreloadIndexHtmlAsync(string wwwroot)
+    {
+        var indexPath = System.IO.Path.Combine(wwwroot, "index.html");
+        if (!File.Exists(indexPath)) return;
+
+        var html = await File.ReadAllTextAsync(indexPath, Encoding.UTF8);
+        html = html.Replace(" crossorigin", "");
+        _indexHtmlCache = Encoding.UTF8.GetBytes(html);
+    }
+
     private void MenuExit_Click(object sender, RoutedEventArgs e) => Close();
     private void MenuReload_Click(object sender, RoutedEventArgs e) => webView.CoreWebView2?.Reload();
-    private void MenuDevTools_Click(object sender, RoutedEventArgs e) => webView.CoreWebView2?.OpenDevToolsWindow();
 
     protected override void OnClosed(EventArgs e)
     {

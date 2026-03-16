@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.IO;
@@ -37,9 +38,25 @@ public class IpcHandler
         _webView.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
     }
 
+    // [M-1] IPC 메시지 최대 크기: 1MB
+    private const int MaxMessageBytes = 1_048_576;
+
     private async void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         IpcResponse response;
+
+        // [M-1] 메시지 크기 제한
+        if (e.WebMessageAsJson.Length > MaxMessageBytes)
+        {
+            var rejected = new IpcResponse
+            {
+                Id = TryExtractId(e.WebMessageAsJson),
+                Type = "error",
+                Error = "Request too large"
+            };
+            _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(rejected, JsonOptions));
+            return;
+        }
 
         try
         {
@@ -48,6 +65,15 @@ public class IpcHandler
 
             var result = await HandleMessage(msg);
             response = new IpcResponse { Id = msg.Id, Type = $"{msg.Type}:result", Payload = result };
+        }
+        catch (NotSupportedException) // [M-1] 내부 타입명 노출 방지
+        {
+            response = new IpcResponse
+            {
+                Id = TryExtractId(e.WebMessageAsJson),
+                Type = "error",
+                Error = "Unsupported operation"
+            };
         }
         catch (Exception ex)
         {
@@ -115,7 +141,12 @@ public class IpcHandler
     {
         var conn = DeserializePayload<SshConnection>(payload);
         var success = await _sshService.ConnectAsync(conn);
-        // 실패 시 실제 에러 메시지를 프론트에 전달
+
+        // [M-3] 접속 감사 로그
+        _ = SshAuditLogger.LogConnectAsync(
+            conn.Host, conn.Port, conn.Username,
+            success, _sshService.State.Error);
+
         return new { success, error = _sshService.State.Error };
     }
 
@@ -124,7 +155,37 @@ public class IpcHandler
     private async Task<object> HandleSshExec(object? payload)
     {
         var data = DeserializePayload<CommandPayload>(payload);
-        var output = await _sshService.ExecuteAsync(data.Command);
+
+        // [M-1] 커맨드 길이 제한 (8KB)
+        if (data.Command.Length > 8192)
+            throw new ArgumentException("Command too long (max 8192 chars)");
+
+        var sw = Stopwatch.StartNew();
+        string output;
+        bool success;
+        try
+        {
+            output = await _sshService.ExecuteAsync(data.Command);
+            success = true;
+        }
+        catch
+        {
+            sw.Stop();
+            var conn2 = _sshService.State.Connection;
+            _ = SshAuditLogger.LogExecAsync(
+                conn2?.Host ?? "unknown", conn2?.Port ?? 22, conn2?.Username ?? "unknown",
+                data.Command, string.Empty, false, sw.ElapsedMilliseconds);
+            throw;
+        }
+
+        sw.Stop();
+
+        // [M-3] 명령 실행 감사 로그 (fire-and-forget)
+        var conn = _sshService.State.Connection;
+        _ = SshAuditLogger.LogExecAsync(
+            conn?.Host ?? "unknown", conn?.Port ?? 22, conn?.Username ?? "unknown",
+            data.Command, output, success, sw.ElapsedMilliseconds);
+
         return new { output };
     }
 
@@ -343,6 +404,7 @@ public class IpcHandler
 }
 
 // ── Payload DTOs ──────────────────────────────────────────── //
+// [M-1] CommandPayload: 길이 제한은 HandleSshExec에서 명시적으로 검증
 internal class CommandPayload      { public string Command    { get; set; } = string.Empty; }
 internal class ShellWritePayload   { public string Data       { get; set; } = string.Empty; }
 internal class HostPayload         { public string Host       { get; set; } = string.Empty; }

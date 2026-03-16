@@ -3,7 +3,7 @@ namespace Aitty.Services;
 /// <summary>
 /// AI 서비스 제공자를 관리하고 전환하는 매니저.
 /// 현재 지원: ollama, gemini, claude, openai
-/// API 키 암호화는 추후 단계에서 적용 예정.
+/// [H-1] API 키는 SecureApiKeyStore (DPAPI)로 암호화 저장.
 /// </summary>
 public class AiServiceManager : IDisposable
 {
@@ -12,8 +12,8 @@ public class AiServiceManager : IDisposable
     private readonly ClaudeApiService _claudeService;
     private readonly OpenAiService _openAiService;
 
-    // API 키 임시 저장 (평문 - 암호화는 추후 단계에서 적용)
-    private readonly Dictionary<string, string> _apiKeys = new(StringComparer.OrdinalIgnoreCase);
+    // [H-1] 평문 Dictionary → DPAPI 암호화 저장소로 교체
+    private readonly SecureApiKeyStore _keyStore = new();
 
     private string _activeProvider = "ollama";
 
@@ -57,13 +57,18 @@ public class AiServiceManager : IDisposable
 
     // ── API 키 관리 ───────────────────────────────────────── //
 
-    /// <summary>API 키 설정 (해당 서비스에 즉시 적용)</summary>
+    /// <summary>
+    /// API 키 설정. SecureApiKeyStore에 암호화 저장 후 해당 서비스에 즉시 반영.
+    /// 서비스 레벨은 HTTP 요청을 위해 평문이 필요하지만, 매니저 레벨 중복 저장은 제거.
+    /// </summary>
     public void SetApiKey(string provider, string apiKey)
     {
         var normalized = provider.ToLowerInvariant();
-        _apiKeys[normalized] = apiKey;
 
-        // 서비스에 즉시 반영
+        // [H-1] 암호화 저장소에 저장 (평문 Dictionary 제거)
+        _keyStore.Set(normalized, apiKey);
+
+        // 서비스에 즉시 반영 (서비스 레벨은 HTTP 헤더에 필요)
         switch (normalized)
         {
             case "gemini": _geminiService.SetApiKey(apiKey); break;
@@ -72,10 +77,9 @@ public class AiServiceManager : IDisposable
         }
     }
 
-    /// <summary>API 키 보유 여부</summary>
+    /// <summary>API 키 보유 여부 (암호화 저장소 기준)</summary>
     public bool HasApiKey(string provider)
-        => _apiKeys.TryGetValue(provider.ToLowerInvariant(), out var key)
-           && !string.IsNullOrWhiteSpace(key);
+        => _keyStore.Has(provider.ToLowerInvariant());
 
     /// <summary>제공자 상태 반환</summary>
     public string GetProviderStatus(string provider) => provider.ToLowerInvariant() switch
@@ -90,10 +94,10 @@ public class AiServiceManager : IDisposable
     /// <summary>지원 제공자 목록과 상태</summary>
     public object[] GetProviders() =>
     [
-        new { id = "ollama", name = "API 접속",             status = GetProviderStatus("ollama"), requiresApiKey = false },
-        new { id = "gemini", name = "Google Gemini",      status = GetProviderStatus("gemini"), requiresApiKey = true  },
-        new { id = "claude", name = "Anthropic Claude",   status = GetProviderStatus("claude"), requiresApiKey = true  },
-        new { id = "openai", name = "OpenAI",             status = GetProviderStatus("openai"), requiresApiKey = true  },
+        new { id = "ollama", name = "API 접속",           status = GetProviderStatus("ollama"), requiresApiKey = false },
+        new { id = "gemini", name = "Google Gemini",    status = GetProviderStatus("gemini"), requiresApiKey = true  },
+        new { id = "claude", name = "Anthropic Claude", status = GetProviderStatus("claude"), requiresApiKey = true  },
+        new { id = "openai", name = "OpenAI",           status = GetProviderStatus("openai"), requiresApiKey = true  },
     ];
 
     public void Dispose()
@@ -102,5 +106,6 @@ public class AiServiceManager : IDisposable
         _geminiService.Dispose();
         _claudeService.Dispose();
         _openAiService.Dispose();
+        _keyStore.Dispose(); // [H-1] 암호화 키 메모리 소거
     }
 }

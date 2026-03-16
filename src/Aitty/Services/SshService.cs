@@ -90,8 +90,10 @@ public class SshService : IDisposable
         _client?.Dispose();
         _client = null;
 
-        _state.IsConnected = false;
+        // [M-2] 민감 필드(Password, Passphrase) 명시적 참조 해제
+        _state.Connection?.Dispose();
         _state.Connection = null;
+        _state.IsConnected = false;
     }
 
     public async Task<string> ExecuteAsync(string command)

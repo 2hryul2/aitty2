@@ -1,5 +1,6 @@
 using System.IO;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
@@ -218,9 +219,75 @@ public class LocalLlmService : IAiService
 
     // ── Open WebUI / Ollama 진단 로그 ────────────────────── //
 
+    /// <summary>
+    /// [C-2] SSRF 방어: 사용자 입력 URL의 스킴·호스트·IP를 검증.
+    /// http/https만 허용, Loopback·사설 IP 차단 (DEBUG 빌드는 localhost 허용).
+    /// </summary>
+    internal static bool IsUrlAllowed(string url)
+    {
+        try
+        {
+            var uri = new Uri(url, UriKind.Absolute);
+
+            // 스킴: http / https 만 허용
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+                return false;
+
+            // 호스트명 → IP 변환
+            if (!IPAddress.TryParse(uri.Host, out var ip))
+            {
+                var addresses = Dns.GetHostAddresses(uri.Host);
+                if (addresses.Length == 0) return false;
+                ip = addresses[0];
+            }
+
+#if DEBUG
+            // Debug: localhost 허용 (개발 환경 Ollama)
+            if (IPAddress.IsLoopback(ip)) return true;
+#endif
+            // 사설·Loopback IP 차단
+            return !IsPrivateOrLoopbackIp(ip);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsPrivateOrLoopbackIp(IPAddress ip)
+    {
+        if (IPAddress.IsLoopback(ip)) return true;
+
+        var b = ip.GetAddressBytes();
+        if (b.Length == 4) // IPv4
+        {
+            return b[0] == 10                                           // 10.0.0.0/8
+                || (b[0] == 172 && b[1] >= 16 && b[1] <= 31)          // 172.16.0.0/12
+                || (b[0] == 192 && b[1] == 168)                        // 192.168.0.0/16
+                || (b[0] == 169 && b[1] == 254);                       // 169.254.0.0/16 link-local
+        }
+        if (b.Length == 16) // IPv6
+        {
+            return (b[0] & 0xFE) == 0xFC                               // fc00::/7 ULA
+                || (b[0] == 0xFE && (b[1] & 0xC0) == 0x80);           // fe80::/10 link-local
+        }
+        return true; // 알 수 없는 주소 형식 → 거부
+    }
+
     public async Task<OpenWebUiDiagnosisResult> DiagnoseOpenWebUiAsync(string? endpoint = null, CancellationToken ct = default)
     {
         var baseUrl = string.IsNullOrWhiteSpace(endpoint) ? _baseUrl : NormalizeBaseUrl(endpoint);
+
+        // [C-2] SSRF 방어: 외부 제공 endpoint는 URL 검증 필수
+        if (!string.IsNullOrWhiteSpace(endpoint) && !IsUrlAllowed(baseUrl))
+        {
+            return new OpenWebUiDiagnosisResult
+            {
+                Success = false,
+                BaseUrl = baseUrl,
+                Logs = new List<string> { $"[{DateTime.Now:HH:mm:ss.fff}] [BLOCKED] URL not allowed: {baseUrl}" }
+            };
+        }
         var logs = new List<string>();
 
         static string Short(string? s)

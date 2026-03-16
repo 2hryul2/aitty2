@@ -19,9 +19,9 @@
                 <MenuItem Header="_Copy" InputGestureText="Ctrl+C" Command="ApplicationCommands.Copy" />
                 <MenuItem Header="_Paste" InputGestureText="Ctrl+V" Command="ApplicationCommands.Paste" />
             </MenuItem>
-            <MenuItem Header="_View">
+            <MenuItem x:Name="viewMenu" Header="_View">
                 <MenuItem Header="_Reload" InputGestureText="Ctrl+R" Click="MenuReload_Click" />
-                <MenuItem Header="Toggle _DevTools" InputGestureText="F12" Click="MenuDevTools_Click" />
+                <!-- DevTools: Debug 빌드에서만 CodeBehind로 동적 추가 [H-2] -->
             </MenuItem>
         </Menu>
         <wv2:WebView2 x:Name="webView" />
