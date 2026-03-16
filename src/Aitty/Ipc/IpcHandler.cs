@@ -395,7 +395,7 @@ public class IpcHandler
     private static object GetAppVersion()
     {
         var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-        return new { version = version?.ToString() ?? "0.1.0" };
+        return new { version = version?.ToString() ?? "0.2.0" };
     }
 
     private static T DeserializePayload<T>(object? payload) where T : class
