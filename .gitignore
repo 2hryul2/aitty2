@@ -53,3 +53,4 @@ src/Aitty/wwwroot/
 # --- Temp scripts ---
 build.ps1
 check*.ps1
+publish*.zip
