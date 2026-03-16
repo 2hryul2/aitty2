@@ -148,8 +148,8 @@
 
 .settings-grid {
   display: grid;
-  /* Provider | Endpoint/APIKey | Status | Model */
-  grid-template-columns: 1fr 1.3fr 0.9fr 1.1fr;
+  /* Provider | Endpoint/APIKey | Status */
+  grid-template-columns: 1fr 1.3fr 0.9fr;
   gap: 8px;
   margin-bottom: 8px;
   align-items: end;
@@ -158,8 +158,21 @@
 /* System Prompt 위 독립 버튼 행 */
 .settings-button-row {
   display: flex;
+  justify-content: space-between;
+  align-items: center;
   gap: 6px;
   margin-bottom: 8px;
+}
+
+.settings-btn-left,
+.settings-btn-right {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.settings-btn-right select {
+  max-width: 220px;
 }
 
 .settings-button-row button {

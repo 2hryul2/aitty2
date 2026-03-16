@@ -834,12 +834,41 @@ export function AITerminal() {
               <input type="text" value={statusMessage} readOnly />
             </div>
 
-            {/* ── Model ──────────────────────────────────────── */}
-            <div className="form-group">
-              <label>Model</label>
+          </div>
+
+          {/* ── 버튼 행 ──────────────────────────────────────── */}
+          <div className="settings-button-row">
+            <div className="settings-btn-left">
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#9ad89a', fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={saveApiLog}
+                  onChange={(e) => setSaveApiLog(e.target.checked)}
+                />
+                로그저장
+              </label>
+              <button type="button" onClick={handleCheck} disabled={isBusy}>
+                Check
+              </button>
+              <button
+                type="button"
+                onClick={handleApplySettings}
+                disabled={isBusy}
+                style={isDirty
+                  ? { color: '#ffc107', borderColor: '#ffc107' }
+                  : isApplySuccess
+                    ? { color: '#4caf50', borderColor: '#4caf50' }
+                    : {}
+                }
+              >
+                Apply
+              </button>
+            </div>
+            <div className="settings-btn-right">
               <select
                 value={currentModel}
                 onChange={(e) => handleModelChange(e.target.value)}
+                disabled={isBusy}
               >
                 {!availableModels.includes(currentModel) && (
                   <option value={currentModel}>{currentModel}</option>
@@ -848,42 +877,13 @@ export function AITerminal() {
                   <option key={model} value={model}>{model}</option>
                 ))}
               </select>
+              <button
+                type="button"
+                onClick={() => setIsSystemPromptOpen(prev => !prev)}
+              >
+                시스템 프롬프트
+              </button>
             </div>
-
-          </div>
-
-          {/* ── 버튼 행 ──────────────────────────────────────── */}
-          <div className="settings-button-row">
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#9ad89a', fontSize: 12 }}>
-              <input
-                type="checkbox"
-                checked={saveApiLog}
-                onChange={(e) => setSaveApiLog(e.target.checked)}
-              />
-              로그저장
-            </label>
-            <button type="button" onClick={handleCheck} disabled={isBusy}>
-              Check
-            </button>
-            <button
-              type="button"
-              onClick={handleApplySettings}
-              disabled={isBusy}
-              style={isDirty
-                ? { color: '#ffc107', borderColor: '#ffc107' }
-                : isApplySuccess
-                  ? { color: '#4caf50', borderColor: '#4caf50' }
-                  : {}
-              }
-            >
-              Apply
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsSystemPromptOpen(prev => !prev)}
-            >
-              시스템 프롬프트
-            </button>
           </div>
 
           {isSystemPromptOpen && (
