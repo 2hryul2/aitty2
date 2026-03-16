@@ -24,6 +24,7 @@ public class LocalLlmService : IAiService
     private string _baseUrl = GetDefaultBaseUrl();
     private string _model = "qwen2.5-coder:7b";
     private string? _systemPrompt = "You are a local Linux SSH assistant. Analyze terminal output, explain issues, and suggest safe next commands. Prefer minimal-risk commands first.";
+    private string? _apiKey;
 
     public LocalLlmService()
     {
@@ -43,6 +44,14 @@ public class LocalLlmService : IAiService
     {
         if (!string.IsNullOrWhiteSpace(url))
             _baseUrl = url.TrimEnd('/');
+    }
+
+    public void SetApiKey(string apiKey)
+    {
+        _apiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey.Trim();
+        _httpClient.DefaultRequestHeaders.Remove("Authorization");
+        if (_apiKey is not null)
+            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
     }
 
     public void Configure(AiConfig config)

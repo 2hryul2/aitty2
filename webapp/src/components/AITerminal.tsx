@@ -211,7 +211,12 @@ export function AITerminal() {
       } else {
         step(2, totalSteps, `Ollama Endpoint 적용: ${endpoint}`)
         await ai.setEndpoint(endpoint)
-        ok('Endpoint 적용 완료')
+        if (apiKey.trim()) {
+          await ai.setApiKey(activeProvider, apiKey.trim())
+          ok(`Endpoint 적용 완료 (API Key 포함)`)
+        } else {
+          ok('Endpoint 적용 완료')
+        }
       }
     } else {
       step(2, totalSteps, '구성 적용 단계는 건너뜀 (이미 적용됨)')
@@ -306,6 +311,7 @@ export function AITerminal() {
         if (apiKey.trim()) await ai.setApiKey(activeProvider, apiKey.trim())
       } else {
         await ai.setEndpoint(endpointUrlRef.current)
+        if (apiKey.trim()) await ai.setApiKey(activeProvider, apiKey.trim())
       }
       await ai.setModel(currentModel)
       await ai.setSystem(systemPrompt)

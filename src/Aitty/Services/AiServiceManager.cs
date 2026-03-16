@@ -71,6 +71,7 @@ public class AiServiceManager : IDisposable
         // 서비스에 즉시 반영 (서비스 레벨은 HTTP 헤더에 필요)
         switch (normalized)
         {
+            case "ollama": _ollamaService.SetApiKey(apiKey); break;
             case "gemini": _geminiService.SetApiKey(apiKey); break;
             case "claude": _claudeService.SetApiKey(apiKey); break;
             case "openai": _openAiService.SetApiKey(apiKey); break;
