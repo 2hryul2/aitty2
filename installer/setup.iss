@@ -54,7 +54,7 @@ Name: "desktopicon";   Description: "{cm:CreateDesktopIcon}";   GroupDescription
 ; 모든 앱 파일 복사 (install.ps1, uninstall.ps1 제외 - 인스톨러가 대체)
 Source: "{#SourceDir}\*";            DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "install.ps1,uninstall.ps1,README.txt"
 ; WebView2 Bootstrapper (setup/ 폴더에 포함된 경우)
-Source: "{#SourceDir}\setup\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall; Check: WebView2SetupExists
+Source: "{#SourceDir}\setup\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: ignoreversion deleteafterinstall skipifsourcedoesntexist; Check: WebView2SetupExists
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
@@ -141,12 +141,14 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   tmpFile: string;
+  psCmd: string;
   res: Integer;
 begin
   if (CurStep = ssInstall) and NeedWebView2 and not WebView2SetupExists then begin
     tmpFile := ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe');
     WizardForm.StatusLabel.Caption := 'WebView2 Runtime 다운로드 중...';
-    if not DownloadTemporaryFile('https://go.microsoft.com/fwlink/p/?LinkId=2124703', 'MicrosoftEdgeWebview2Setup.exe', '', @res) then begin
+    psCmd := '-NoProfile -Command "Invoke-WebRequest -Uri ''https://go.microsoft.com/fwlink/p/?LinkId=2124703'' -OutFile ''' + tmpFile + '''"';
+    if not Exec('powershell.exe', psCmd, '', SW_HIDE, ewWaitUntilTerminated, res) or (res <> 0) then begin
       MsgBox('WebView2 Runtime 다운로드에 실패했습니다.' + #13#10 + 'https://go.microsoft.com/fwlink/p/?LinkId=2124703 에서 수동 설치해 주세요.', mbError, MB_OK);
       Exit;
     end;
@@ -160,7 +162,7 @@ procedure CurPageChanged(CurPageID: Integer);
 begin
   if CurPageID = wpFinished then begin
     WizardForm.FinishedLabel.Caption :=
-      AppName + ' v' + '{#AppVersion}' + ' 설치가 완료되었습니다!' + #13#10 + #13#10 +
+      '{#AppName}' + ' v{#AppVersion}' + ' 설치가 완료되었습니다!' + #13#10 + #13#10 +
       '설치 경로: ' + ExpandConstant('{app}') + #13#10 + #13#10 +
       '아래 체크박스를 선택하여 지금 바로 실행할 수 있습니다.';
   end;
