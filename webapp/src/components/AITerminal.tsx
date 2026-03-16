@@ -269,14 +269,24 @@ export function AITerminal() {
     ok(`isConfigured=${state.isConfigured}, provider=${state.provider}, engine=${state.engine}`)
 
     step(stepNo++, totalSteps, '모델 목록 조회 (ai.models)')
-    const models = await ai.models()
-    ok(`모델 ${models.models.length}개 확인`)
+    let modelList: string[] = []
+    try {
+      const models = await ai.models()
+      modelList = models.models
+      ok(`모델 ${modelList.length}개 확인`)
+    } catch (err) {
+      warn(`모델 목록 조회 실패: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    }
 
     step(stepNo++, totalSteps, 'Provider 상태 조회 (ai.providers)')
-    const provResult = await ai.providers()
-    ok(`provider ${provResult.providers.length}개, active=${provResult.active}`)
-
-    const modelList = models.models
+    let provResult: Awaited<ReturnType<typeof ai.providers>>
+    try {
+      provResult = await ai.providers()
+      ok(`provider ${provResult.providers.length}개, active=${provResult.active}`)
+    } catch (err) {
+      warn(`Provider 목록 조회 실패: ${err instanceof Error ? err.message : 'Unknown error'}`)
+      provResult = { providers: providers, active: activeProvider }
+    }
     const serverEp = state.baseUrl || endpointUrlRef.current
     const currentProvider = state.provider || activeProvider
     const currentProviderInfo = provResult.providers.find(p => p.id === currentProvider)
