@@ -137,6 +137,7 @@ export interface AiProvidersResponse {
 
 export interface OpenWebUiDiagnosis {
   success: boolean
+  isBlocked: boolean
   baseUrl: string
   isOpenWebUi: boolean
   modelsCount: number

@@ -222,6 +222,9 @@ export function AITerminal() {
     if (runOpenWebUiDiag) {
       step(stepNo++, totalSteps, 'Open WebUI API 연동 진단')
       const diag = await ai.openWebUiDiagnose(endpoint)
+      if (diag.isBlocked) {
+        alert(`⛔ 차단된 URL\n\n${endpoint}\n\n클라우드 메타데이터 주소(169.254.x.x)는 보안상 연결이 차단됩니다.`)
+      }
       ok(`diagnosis: success=${diag.success}, isOpenWebUi=${diag.isOpenWebUi}, models=${diag.modelsCount}`)
       diag.logs.forEach((line) => log(`\x1b[2;37m   ${line}\x1b[0m`, `   ${line}`))
     }
