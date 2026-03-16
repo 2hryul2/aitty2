@@ -812,8 +812,8 @@ export function AITerminal() {
               />
             </div>
 
-            {/* ── API Key (API 제공자 활성 / Ollama 흐림) ──────── */}
-            <div className="form-group" style={{ opacity: requiresApiKey ? 1 : 0.35 }}>
+            {/* ── API Key (항상 활성) ───────────────────────────── */}
+            <div className="form-group">
               <label>{providerDisplayName} API Key</label>
               <input
                 type="password"
@@ -825,7 +825,7 @@ export function AITerminal() {
                   activeProvider === 'claude' ? 'sk-ant-...' : '—'
                 }
                 autoComplete="off"
-                disabled={!requiresApiKey || isBusy}
+                disabled={isBusy}
               />
             </div>
 
