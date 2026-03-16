@@ -800,38 +800,33 @@ export function AITerminal() {
               </select>
             </div>
 
-            {/* ── Ollama: Endpoint / Gemini: API Key ─────────── */}
-            {requiresApiKey ? (
-              <div className="form-group">
-                <label>{providerDisplayName} API Key</label>
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => { setApiKey(e.target.value); setIsDirty(true); setIsApplySuccess(false) }}
-                  placeholder={
-                    activeProvider === 'gemini' ? 'AIza...' :
-                    activeProvider === 'openai' ? 'sk-...' :
-                    'sk-ant-...'
-                  }
-                  autoComplete="off"
-                />
-              </div>
-            ) : (
-              <div className="form-group">
-                <label>Engine Endpoint</label>
-                <input
-                  type="text"
-                  value={endpointUrl}
-                  onChange={(e) => handleEndpointChange(e.target.value)}
-                  placeholder={DEFAULT_ENDPOINT}
-                />
-              </div>
-            )}
+            {/* ── Engine Endpoint (Ollama 활성 / API 제공자 흐림) ── */}
+            <div className="form-group" style={{ opacity: requiresApiKey ? 0.35 : 1 }}>
+              <label>Engine Endpoint</label>
+              <input
+                type="text"
+                value={endpointUrl}
+                onChange={(e) => handleEndpointChange(e.target.value)}
+                placeholder={DEFAULT_ENDPOINT}
+                disabled={requiresApiKey || isBusy}
+              />
+            </div>
 
-            {/* ── Engine Status ───────────────────────────────── */}
-            <div className="form-group">
-              <label>Engine Status</label>
-              <input type="text" value={statusMessage} readOnly />
+            {/* ── API Key (API 제공자 활성 / Ollama 흐림) ──────── */}
+            <div className="form-group" style={{ opacity: requiresApiKey ? 1 : 0.35 }}>
+              <label>{providerDisplayName} API Key</label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => { setApiKey(e.target.value); setIsDirty(true); setIsApplySuccess(false) }}
+                placeholder={
+                  activeProvider === 'gemini' ? 'AIza...' :
+                  activeProvider === 'openai' ? 'sk-...' :
+                  activeProvider === 'claude' ? 'sk-ant-...' : '—'
+                }
+                autoComplete="off"
+                disabled={!requiresApiKey || isBusy}
+              />
             </div>
 
           </div>

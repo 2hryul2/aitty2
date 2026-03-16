@@ -148,8 +148,8 @@
 
 .settings-grid {
   display: grid;
-  /* Provider | Endpoint/APIKey | Status */
-  grid-template-columns: 1fr 1.3fr 0.9fr;
+  /* Provider | Endpoint | API-KEY */
+  grid-template-columns: 1fr 1.3fr 1.3fr;
   gap: 8px;
   margin-bottom: 8px;
   align-items: end;
