@@ -128,6 +128,7 @@ export interface AiProvider {
   name: string
   status: string
   requiresApiKey: boolean
+  endpoint?: string
 }
 
 export interface AiProvidersResponse {

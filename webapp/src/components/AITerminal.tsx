@@ -11,6 +11,28 @@ const DEFAULT_SYSTEM_PROMPT = 'You are a local Linux SSH assistant. Analyze term
 const DEFAULT_ENDPOINT = import.meta.env.VITE_DEFAULT_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434'
 let startupTracePrinted = false
 
+// 프로바이더별 실제 API 엔드포인트 (프론트엔드 표시용)
+const PROVIDER_ENDPOINTS: Record<string, string> = {
+  gemini: 'https://generativelanguage.googleapis.com',
+  claude: 'https://api.anthropic.com',
+  openai: 'https://api.openai.com',
+}
+
+// 백엔드 providers 응답에 로컬 endpoint/name 정보를 병합
+function mergeProviderEndpoints(backendProviders: AiProvider[]): AiProvider[] {
+  const PROVIDER_NAMES: Record<string, string> = {
+    ollama: 'API 접속',
+    gemini: 'Google Gemini',
+    claude: 'Anthropic Claude',
+    openai: 'OpenAI ChatGPT',
+  }
+  return backendProviders.map(p => ({
+    ...p,
+    name: PROVIDER_NAMES[p.id] ?? p.name,
+    ...(PROVIDER_ENDPOINTS[p.id] ? { endpoint: PROVIDER_ENDPOINTS[p.id] } : {}),
+  }))
+}
+
 function isWebView2(): boolean {
   return !!window.chrome?.webview
 }
@@ -47,10 +69,10 @@ export function AITerminal() {
   const [activeProvider, setActiveProvider] = useState<string>('ollama')
   const [apiKey, setApiKey] = useState('')
   const [providers, setProviders] = useState<AiProvider[]>([
-    { id: 'ollama', name: 'API 접속',        status: 'local',      requiresApiKey: false },
-    { id: 'gemini', name: 'Google Gemini',   status: 'no-api-key', requiresApiKey: true  },
-    { id: 'claude', name: 'Anthropic Claude',status: 'no-api-key', requiresApiKey: true  },
-    { id: 'openai', name: 'OpenAI',          status: 'no-api-key', requiresApiKey: true  },
+    { id: 'ollama', name: 'API 접속',          status: 'local',      requiresApiKey: false },
+    { id: 'gemini', name: 'Google Gemini',    status: 'no-api-key', requiresApiKey: true,  endpoint: 'https://generativelanguage.googleapis.com' },
+    { id: 'claude', name: 'Anthropic Claude', status: 'no-api-key', requiresApiKey: true,  endpoint: 'https://api.anthropic.com' },
+    { id: 'openai', name: 'OpenAI ChatGPT',   status: 'no-api-key', requiresApiKey: true,  endpoint: 'https://api.openai.com' },
   ])
   const [saveApiLog, setSaveApiLog] = useState<boolean>(() => {
     try {
@@ -97,7 +119,7 @@ export function AITerminal() {
       setIsConfigured(state.isConfigured)
       setEngineName(state.engine || 'ollama')
       setActiveProvider(currentProvider)
-      setProviders(provResult.providers)
+      setProviders(mergeProviderEndpoints(provResult.providers))
       setAvailableModels(modelList)
 
       const currentProviderInfo = provResult.providers.find(p => p.id === currentProvider)
@@ -809,15 +831,16 @@ export function AITerminal() {
               </select>
             </div>
 
-            {/* ── Engine Endpoint (Ollama 활성 / API 제공자 흐림) ── */}
-            <div className="form-group" style={{ opacity: requiresApiKey ? 0.35 : 1 }}>
+            {/* ── Engine Endpoint (Ollama 활성 / API 제공자: 실제 URL 표시) ── */}
+            <div className="form-group" style={{ opacity: requiresApiKey ? 0.45 : 1 }}>
               <label>Engine Endpoint</label>
               <input
                 type="text"
-                value={endpointUrl}
-                onChange={(e) => handleEndpointChange(e.target.value)}
+                value={requiresApiKey ? (currentProviderInfo?.endpoint ?? '') : endpointUrl}
+                onChange={(e) => { if (!requiresApiKey) handleEndpointChange(e.target.value) }}
                 placeholder={DEFAULT_ENDPOINT}
                 disabled={requiresApiKey || isBusy}
+                readOnly={requiresApiKey}
               />
             </div>
 
