@@ -49,7 +49,12 @@ export function AITerminal() {
   const runDetailedConnectionTraceRef = useRef<(title: string, applyConfig: boolean) => Promise<boolean>>(async () => false)
 
   // endpointUrl을 ref로도 관리 → loadEngineState deps에서 제거
-  const endpointUrlRef = useRef(DEFAULT_ENDPOINT)
+  // localStorage에서 마지막 입력값 복원 (API Key/비밀번호 제외)
+  const _savedEndpoint = (() => {
+    try { return localStorage.getItem('aitty.endpointUrl') || DEFAULT_ENDPOINT }
+    catch { return DEFAULT_ENDPOINT }
+  })()
+  const endpointUrlRef = useRef(_savedEndpoint)
 
   const [isConfigured, setIsConfigured] = useState(false)
   const [currentModel, setCurrentModel] = useState(DEFAULT_MODEL)
@@ -59,7 +64,7 @@ export function AITerminal() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(true)
   const [isSystemPromptOpen, setIsSystemPromptOpen] = useState(false)
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_SYSTEM_PROMPT)
-  const [endpointUrl, setEndpointUrl] = useState(DEFAULT_ENDPOINT)
+  const [endpointUrl, setEndpointUrl] = useState(_savedEndpoint)
   const [statusMessage, setStatusMessage] = useState('Not checked')
   const [isBusy, setIsBusy] = useState(false)
   const [isDirty, setIsDirty] = useState(false)       // 설정 변경 후 미적용
@@ -89,6 +94,9 @@ export function AITerminal() {
   useEffect(() => {
     try { localStorage.setItem('aitty.saveApiLog', saveApiLog ? '1' : '0') } catch { /* ignore */ }
   }, [saveApiLog])
+  useEffect(() => {
+    try { localStorage.setItem('aitty.endpointUrl', endpointUrl) } catch { /* ignore */ }
+  }, [endpointUrl])
 
   const resizeRef = useTerminalResize(() => {
     if (fitAddonRef.current && termRef.current) {
