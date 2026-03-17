@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
+import { Unicode11Addon } from 'xterm-addon-unicode11'
 import 'xterm/css/xterm.css'
 import { useTerminalResize } from '@hooks/useTerminalResize'
 import { ai, type AiProvider } from '@bridge/ipcBridge'
@@ -653,6 +654,9 @@ export function AITerminal() {
 
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
+    const unicode11Addon = new Unicode11Addon()
+    term.loadAddon(unicode11Addon)
+    term.unicode.activeVersion = '11'
     term.open(terminalRef.current)
     fitAddon.fit()
 
@@ -712,9 +716,12 @@ export function AITerminal() {
           }
         })
       } else if (data === '\u007f' || data === '\b') {
-        if (inputBufferRef.current.length > 0) {
-          inputBufferRef.current = inputBufferRef.current.slice(0, -1)
-          term.write('\b \b')
+        const chars = [...inputBufferRef.current]
+        if (chars.length > 0) {
+          const lastChar = chars[chars.length - 1]
+          inputBufferRef.current = chars.slice(0, -1).join('')
+          const w = term.unicode.wcwidth(lastChar.codePointAt(0) ?? 0)
+          term.write(w === 2 ? '\b\b  \b\b' : '\b \b')
         }
       } else if (data === '\x03') {
         inputBufferRef.current = ''
