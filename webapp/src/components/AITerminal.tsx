@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
-import { Unicode11Addon } from 'xterm-addon-unicode11'
 import 'xterm/css/xterm.css'
 import { useTerminalResize } from '@hooks/useTerminalResize'
 import { ai, type AiProvider } from '@bridge/ipcBridge'
@@ -11,23 +10,6 @@ const DEFAULT_MODEL = 'qwen2.5-coder:7b'
 const DEFAULT_SYSTEM_PROMPT = 'You are a local Linux SSH assistant. Analyze terminal output, explain issues, and suggest safe next commands. Prefer minimal-risk commands first.'
 const DEFAULT_ENDPOINT = import.meta.env.VITE_DEFAULT_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434'
 let startupTracePrinted = false
-
-// 터미널 표시 폭 계산 (한글·CJK = 2cell, 그 외 = 1cell)
-function charDisplayWidth(char: string): number {
-  const cp = char.codePointAt(0) ?? 0
-  if (cp < 0x1100) return 1
-  return (
-    cp <= 0x115F ||                        // Hangul Jamo
-    (cp >= 0x2E80 && cp <= 0x303E) ||     // CJK Radicals
-    (cp >= 0x3041 && cp <= 0xA4CF) ||     // CJK / Japanese
-    (cp >= 0xA960 && cp <= 0xA97F) ||     // Hangul Jamo Ext-A
-    (cp >= 0xAC00 && cp <= 0xD7FF) ||     // Hangul Syllables (가-힣)
-    (cp >= 0xF900 && cp <= 0xFAFF) ||     // CJK Compatibility
-    (cp >= 0xFE10 && cp <= 0xFE6F) ||     // CJK Compat Forms
-    (cp >= 0xFF01 && cp <= 0xFF60) ||     // Full-width Latin
-    (cp >= 0xFFE0 && cp <= 0xFFE6)        // Full-width signs
-  ) ? 2 : 1
-}
 
 // 프로바이더별 실제 API 엔드포인트 (프론트엔드 표시용)
 const PROVIDER_ENDPOINTS: Record<string, string> = {
@@ -671,10 +653,7 @@ export function AITerminal() {
 
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
-    const unicode11Addon = new Unicode11Addon()
-    term.loadAddon(unicode11Addon)
     term.open(terminalRef.current)
-    term.unicode.activeVersion = '11'   // open() 후 호출해야 addon.activate()가 완료됨
     fitAddon.fit()
 
     termRef.current = term
@@ -733,12 +712,9 @@ export function AITerminal() {
           }
         })
       } else if (data === '\u007f' || data === '\b') {
-        const chars = [...inputBufferRef.current]
-        if (chars.length > 0) {
-          const lastChar = chars[chars.length - 1]
-          inputBufferRef.current = chars.slice(0, -1).join('')
-          const w = charDisplayWidth(lastChar)
-          term.write(w === 2 ? '\b\b  \b\b' : '\b \b')
+        if (inputBufferRef.current.length > 0) {
+          inputBufferRef.current = inputBufferRef.current.slice(0, -1)
+          term.write('\b \b')
         }
       } else if (data === '\x03') {
         inputBufferRef.current = ''
