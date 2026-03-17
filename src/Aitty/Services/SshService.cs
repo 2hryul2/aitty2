@@ -23,7 +23,9 @@ public class SshService : IDisposable
     private bool _collectingOutput = false;
 
     public SshConnectionState State => _state;
-    public bool IsConnected => _client?.IsConnected == true;
+    public bool IsConnected =>
+        _client?.IsConnected == true &&
+        (_shellStream == null || _shellStream.CanRead);
 
     public async Task<bool> ConnectAsync(SshConnection connection)
     {
@@ -56,6 +58,7 @@ public class SshService : IDisposable
                 };
 
                 _client = new SshClient(connInfo);
+                _client.KeepAliveInterval = TimeSpan.FromSeconds(15);
                 _client.Connect();
                 _shellStream = _client.CreateShellStream("xterm", 120, 40, 800, 600, 4096);
             });
@@ -144,29 +147,41 @@ public class SshService : IDisposable
 
     public string? ReadFromShell()
     {
-        if (_shellStream is null || !_shellStream.DataAvailable)
+        if (_shellStream is null || !_shellStream.CanRead)
             return null;
 
-        var output = _shellStream.Read();
-        Remember(output);
+        if (!_shellStream.DataAvailable)
+            return null;
 
-        // 명령어 실행 후 출력을 마지막 출력 버퍼에 수집 (ANSI 코드 제거)
-        if (_collectingOutput && !string.IsNullOrEmpty(output))
+        try
         {
-            var clean = AnsiRegex.Replace(output, string.Empty);
-            foreach (var line in clean.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            var output = _shellStream.Read();
+            Remember(output);
+
+            // 명령어 실행 후 출력을 마지막 출력 버퍼에 수집 (ANSI 코드 제거)
+            if (_collectingOutput && !string.IsNullOrEmpty(output))
             {
-                var trimmed = line.Trim();
-                if (!string.IsNullOrWhiteSpace(trimmed))
+                var clean = AnsiRegex.Replace(output, string.Empty);
+                foreach (var line in clean.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
                 {
-                    _lastOutputBuffer.Add(trimmed);
-                    if (_lastOutputBuffer.Count > MaxLastOutputLines)
-                        _lastOutputBuffer.RemoveAt(0);
+                    var trimmed = line.Trim();
+                    if (!string.IsNullOrWhiteSpace(trimmed))
+                    {
+                        _lastOutputBuffer.Add(trimmed);
+                        if (_lastOutputBuffer.Count > MaxLastOutputLines)
+                            _lastOutputBuffer.RemoveAt(0);
+                    }
                 }
             }
-        }
 
-        return output;
+            return output;
+        }
+        catch (Exception)
+        {
+            // 채널이 닫힌 상태에서 Read() 시 예외 흡수
+            // IsConnected가 false를 반환하므로 헬스체크에서 감지됨
+            return null;
+        }
     }
 
     /// <summary>마지막 명령어 실행 이후 SSH 터미널에 출력된 내용만 반환</summary>

@@ -82,7 +82,7 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
     isPollingRef.current = false
   }, [])
 
-  // ── 30초 SSH 헬스체크 ────────────────────────────────────────
+  // ── 10초 SSH 헬스체크 ────────────────────────────────────────
   const stopHealthCheck = useCallback(() => {
     if (healthCheckTimerRef.current) {
       clearInterval(healthCheckTimerRef.current)
@@ -107,7 +107,7 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
           onDisconnect?.()
         }
       } catch { /* IPC error - skip */ }
-    }, 30_000)
+    }, 10_000)
   }, [stopHealthCheck, stopPolling, onDisconnect])
 
   // Cleanup on unmount
