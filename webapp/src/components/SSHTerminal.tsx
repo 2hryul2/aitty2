@@ -17,7 +17,8 @@ export interface SSHTerminalProps {
   autoConnect?: boolean
 }
 
-const POLL_INTERVAL = 100 // ms
+const POLL_INTERVAL = 100         // ms
+const HEALTH_CHECK_INTERVAL = 4_000  // ms — 5초 이내 disconnect 감지
 const DEFAULT_SSH_HOST = import.meta.env.VITE_DEFAULT_SSH_HOST || ''
 const DEFAULT_SSH_PORT = import.meta.env.VITE_DEFAULT_SSH_PORT || '22'
 const DEFAULT_SSH_USERNAME = import.meta.env.VITE_DEFAULT_SSH_USERNAME || ''
@@ -98,6 +99,7 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
         if (!isConnected) {
           stopHealthCheck()
           stopPolling()
+          await disconnect()  // sshState.isConnected → false → 배지 즉시 업데이트
           const term = termRef.current
           if (term) {
             term.writeln('\r\n\x1b[31m⚠ SSH 연결이 끊어졌습니다.\x1b[0m')
@@ -107,8 +109,8 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
           onDisconnect?.()
         }
       } catch { /* IPC error - skip */ }
-    }, 10_000)
-  }, [stopHealthCheck, stopPolling, onDisconnect])
+    }, HEALTH_CHECK_INTERVAL)
+  }, [stopHealthCheck, stopPolling, disconnect, onDisconnect])
 
   // Cleanup on unmount
   useEffect(() => {
