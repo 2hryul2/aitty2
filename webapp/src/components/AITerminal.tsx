@@ -11,6 +11,23 @@ const DEFAULT_SYSTEM_PROMPT = 'You are a local Linux SSH assistant. Analyze term
 const DEFAULT_ENDPOINT = import.meta.env.VITE_DEFAULT_OLLAMA_ENDPOINT || 'http://127.0.0.1:11434'
 let startupTracePrinted = false
 
+// 터미널 표시 폭 계산 (한글·CJK = 2cell, 그 외 = 1cell)
+function charDisplayWidth(char: string): number {
+  const cp = char.codePointAt(0) ?? 0
+  if (cp < 0x1100) return 1
+  return (
+    cp <= 0x115F                    ||  // Hangul Jamo
+    (cp >= 0x2E80 && cp <= 0x303E) ||  // CJK Radicals
+    (cp >= 0x3041 && cp <= 0xA4CF) ||  // CJK / Japanese
+    (cp >= 0xA960 && cp <= 0xA97F) ||  // Hangul Jamo Ext-A
+    (cp >= 0xAC00 && cp <= 0xD7FF) ||  // Hangul Syllables (가-힣)
+    (cp >= 0xF900 && cp <= 0xFAFF) ||  // CJK Compat
+    (cp >= 0xFE10 && cp <= 0xFE6F) ||  // CJK Forms
+    (cp >= 0xFF01 && cp <= 0xFF60) ||  // Full-width Latin
+    (cp >= 0xFFE0 && cp <= 0xFFE6)     // Full-width signs
+  ) ? 2 : 1
+}
+
 // 프로바이더별 실제 API 엔드포인트 (프론트엔드 표시용)
 const PROVIDER_ENDPOINTS: Record<string, string> = {
   gemini: 'https://generativelanguage.googleapis.com',
@@ -712,9 +729,20 @@ export function AITerminal() {
           }
         })
       } else if (data === '\u007f' || data === '\b') {
-        if (inputBufferRef.current.length > 0) {
-          inputBufferRef.current = inputBufferRef.current.slice(0, -1)
-          term.write('\b \b')
+        const chars = [...inputBufferRef.current]
+        if (chars.length > 0) {
+          const lastChar = chars.pop()!
+          inputBufferRef.current = chars.join('')
+          const w = charDisplayWidth(lastChar)
+          const curX = term.buffer.active.cursorX  // 0-indexed 실제 커서 열
+          if (curX >= w) {
+            // 일반: CSI D로 w칸 후진 + ECH로 w셀 강제 소거 (spacer 포함)
+            term.write(`\x1b[${w}D\x1b[${w}X`)
+          } else {
+            // 줄 바꿈: wide char가 이전 줄 끝에 위치
+            const targetCol = term.cols - w
+            term.write(`\x1b[A\x1b[${targetCol + 1}G\x1b[${w}X`)
+          }
         }
       } else if (data === '\x03') {
         inputBufferRef.current = ''
