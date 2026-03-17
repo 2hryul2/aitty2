@@ -8,13 +8,15 @@ namespace Aitty.Services;
 /// </summary>
 public interface IAiService : IDisposable
 {
-    string ProviderName { get; }
-    string CurrentModel { get; }
-    bool IsConfigured { get; }
+    string ProviderName  { get; }
+    string CurrentModel  { get; }
+    string? SystemPrompt { get; }  // 세션 저장을 위해 현재 시스템 프롬프트 노출
+    bool IsConfigured    { get; }
     IReadOnlyList<AiChatMessage> History { get; }
 
     void SetModel(string model);
     void SetSystemPrompt(string? systemPrompt);
+    void SetHistory(IEnumerable<AiChatMessage> messages);  // 세션 복원
     void ClearHistory();
 
     Task<bool> IsEngineAvailableAsync(CancellationToken ct = default);

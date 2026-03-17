@@ -36,7 +36,8 @@ public class LocalLlmService : IAiService
 
     public string ProviderName => "ollama";
     public bool IsConfigured => true;
-    public string CurrentModel => _model;
+    public string CurrentModel  => _model;
+    public string? SystemPrompt => _systemPrompt;
     public string CurrentBaseUrl => _baseUrl;
     public IReadOnlyList<AiChatMessage> History => _conversationHistory.AsReadOnly();
 
@@ -213,6 +214,13 @@ public class LocalLlmService : IAiService
     }
 
     // ── 이력 초기화 ───────────────────────────────────────── //
+
+    public void SetHistory(IEnumerable<AiChatMessage> messages)
+    {
+        _conversationHistory.Clear();
+        _conversationHistory.AddRange(messages);
+        _context = null;    // context 토큰 리셋 — 복원된 메시지는 이미 context에 반영됨
+    }
 
     public void ClearHistory()
     {

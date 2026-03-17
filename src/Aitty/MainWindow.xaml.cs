@@ -15,6 +15,7 @@ public partial class MainWindow : Window
     private readonly ConfigService _configService;
     private readonly KeyManagerService _keyManagerService;
     private readonly AiServiceManager _aiManager;
+    private readonly SessionService _sessionService;
     private IpcHandler? _ipcHandler;
 
     // [L-1] index.html 메모리 캐시: 앱 시작 시 1회 로드, 이후 매 요청마다 디스크 I/O 제거
@@ -36,8 +37,16 @@ public partial class MainWindow : Window
         _configService = new ConfigService();
         _keyManagerService = new KeyManagerService();
         _aiManager = new AiServiceManager();
+        _sessionService = new SessionService();
 
         Loaded += MainWindow_Loaded;
+
+        // 앱 종료 시 세션 자동 저장 (동기, 소용량)
+        Closing += (_, _) =>
+        {
+            try { _sessionService.Save(_aiManager.GetSessionData()); }
+            catch { /* 저장 실패가 종료를 막으면 안 됨 */ }
+        };
 
         var exitBinding = new KeyBinding(new RelayCommand(_ => Close()), new KeyGesture(Key.Q, ModifierKeys.Control));
         InputBindings.Add(exitBinding);
@@ -92,8 +101,13 @@ public partial class MainWindow : Window
                     MessageBox.Show($"WebView2 process failed: {args.ProcessFailedKind}",
                         "Error", MessageBoxButton.OK, MessageBoxImage.Error));
 
+            // ── 세션 복원 (IPC 등록 전) ───────────────────────
+            var restoredSession = await _sessionService.LoadAsync();
+            if (restoredSession is not null)
+                _aiManager.RestoreSessionData(restoredSession);
+
             // ── IPC 등록 ──────────────────────────────────────
-            _ipcHandler = new IpcHandler(webView, _sshService, _configService, _keyManagerService, _aiManager);
+            _ipcHandler = new IpcHandler(webView, _sshService, _configService, _keyManagerService, _aiManager, _sessionService, restoredSession);
             _ipcHandler.Register();
 
             // ── 네비게이션 ────────────────────────────────────

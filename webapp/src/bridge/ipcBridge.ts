@@ -220,4 +220,18 @@ export const app = {
   version: () => invoke<{ version: string }>('app:version'),
 }
 
+export interface RestoredSession {
+  savedAt: string
+  model: string
+  engine: string
+  provider: string
+  systemPrompt: string | null
+  messageCount: number
+}
+
+export const session = {
+  /** 앱 시작 시 자동 복원된 세션 정보 반환. 복원 없으면 null. */
+  getRestored: () => invoke<RestoredSession | null>('session:get-restored'),
+}
+
 init()

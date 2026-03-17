@@ -22,15 +22,26 @@ public class IpcHandler
     private readonly ConfigService _configService;
     private readonly KeyManagerService _keyManagerService;
     private readonly AiServiceManager _aiManager;
+    private readonly SessionService _sessionService;
+    private readonly SessionData? _restoredSession;
     private CancellationTokenSource? _streamingCts;
 
-    public IpcHandler(WebView2 webView, SshService sshService, ConfigService configService, KeyManagerService keyManagerService, AiServiceManager aiManager)
+    public IpcHandler(
+        WebView2 webView,
+        SshService sshService,
+        ConfigService configService,
+        KeyManagerService keyManagerService,
+        AiServiceManager aiManager,
+        SessionService sessionService,
+        SessionData? restoredSession = null)
     {
         _webView = webView;
         _sshService = sshService;
         _configService = configService;
         _keyManagerService = keyManagerService;
         _aiManager = aiManager;
+        _sessionService = sessionService;
+        _restoredSession = restoredSession;
     }
 
     public void Register()
@@ -129,6 +140,9 @@ public class IpcHandler
             // ── SSH 분석 ─────────────────────────────────── //
             "ai:ssh:analyze"           => await HandleAiAnalyzeSsh(msg),
             "ai:ssh:suggest-command"   => await HandleAiSuggestCommand(msg),
+
+            // ── 세션 ─────────────────────────────────────────── //
+            "session:get-restored"     => HandleSessionGetRestored(),
 
             "app:version"              => GetAppVersion(),
             _                          => throw new NotSupportedException($"Unknown IPC type: {msg.Type}")
@@ -396,6 +410,22 @@ public class IpcHandler
     {
         var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
         return new { version = version?.ToString() ?? "0.2.0" };
+    }
+
+    // ── 세션 ──────────────────────────────────────────────── //
+
+    private object? HandleSessionGetRestored()
+    {
+        if (_restoredSession is null) return null;
+        return new
+        {
+            savedAt      = _restoredSession.SavedAt.ToString("o"),
+            model        = _restoredSession.Model,
+            engine       = _restoredSession.Engine,
+            provider     = _restoredSession.Provider,
+            systemPrompt = _restoredSession.SystemPrompt,
+            messageCount = _restoredSession.Messages.Count
+        };
     }
 
     private static T DeserializePayload<T>(object? payload) where T : class

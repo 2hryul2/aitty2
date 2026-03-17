@@ -3,7 +3,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 import { useTerminalResize } from '@hooks/useTerminalResize'
-import { ai, type AiProvider } from '@bridge/ipcBridge'
+import { ai, session, type AiProvider } from '@bridge/ipcBridge'
 import { logger } from '@utils/logger'
 
 const DEFAULT_MODEL = 'qwen2.5-coder:7b'
@@ -680,8 +680,21 @@ export function AITerminal() {
     term.writeln('Type \x1b[33mhelp\x1b[0m for available commands.')
 
     if (isWebView2()) {
-      // ── 시작 시 상세 접속 로그 자동 출력 ───────────────────────
+      // ── 시작 시 세션 복원 + 상세 접속 로그 자동 출력 ──────────────
       ;(async () => {
+        // 이전 세션 복원 (앱 종료 시 저장된 대화/모델/프롬프트)
+        try {
+          const saved = await session.getRestored()
+          if (saved && saved.messageCount > 0) {
+            setCurrentModel(saved.model)
+            setEngineName(saved.engine)
+            setActiveProvider(saved.provider)
+            if (saved.systemPrompt) setSystemPrompt(saved.systemPrompt)
+            const date = new Date(saved.savedAt).toLocaleString('ko-KR')
+            term.writeln(`\x1b[2m[세션 복원: ${date} | ${saved.messageCount}개 메시지]\x1b[0m`)
+          }
+        } catch { /* 복원 실패 — 무시하고 새 세션 시작 */ }
+
         if (startupTracePrinted) {
           writePromptRef.current()
           return

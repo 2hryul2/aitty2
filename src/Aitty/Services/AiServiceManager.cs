@@ -101,6 +101,30 @@ public class AiServiceManager : IDisposable
         new { id = "openai", name = "OpenAI",           status = GetProviderStatus("openai"), requiresApiKey = true  },
     ];
 
+    // ── 세션 저장/복원 ──────────────────────────────────────── //
+
+    /// <summary>현재 활성 서비스의 세션 스냅샷을 반환.</summary>
+    public Aitty.Models.SessionData GetSessionData() => new()
+    {
+        SavedAt      = DateTime.UtcNow,
+        Engine       = _activeProvider,
+        Provider     = _activeProvider,
+        Model        = Active.CurrentModel,
+        SystemPrompt = Active.SystemPrompt,
+        Messages     = [.. Active.History]
+    };
+
+    /// <summary>저장된 세션을 복원. 제공자 전환 → 모델/프롬프트/히스토리 적용.</summary>
+    public void RestoreSessionData(Aitty.Models.SessionData data)
+    {
+        SwitchProvider(data.Provider);
+        if (!string.IsNullOrWhiteSpace(data.Model))
+            Active.SetModel(data.Model);
+        Active.SetSystemPrompt(data.SystemPrompt);
+        if (data.Messages.Count > 0)
+            Active.SetHistory(data.Messages);
+    }
+
     public void Dispose()
     {
         _ollamaService.Dispose();

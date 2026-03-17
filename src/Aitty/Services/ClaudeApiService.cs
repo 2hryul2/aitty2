@@ -38,9 +38,10 @@ public class ClaudeApiService : IAiService
     private string? _systemPrompt;
     private int _maxTokens = 4096;
 
-    public string ProviderName => "claude";
+    public string ProviderName  => "claude";
     public bool IsConfigured => !string.IsNullOrEmpty(_apiKey);
-    public string CurrentModel => _model;
+    public string CurrentModel  => _model;
+    public string? SystemPrompt => _systemPrompt;
     public IReadOnlyList<AiChatMessage> History => _conversationHistory.AsReadOnly();
 
     public Task<bool> IsEngineAvailableAsync(CancellationToken ct = default)
@@ -244,6 +245,12 @@ public class ClaudeApiService : IAiService
             FinishReason = finishReason,
             DurationMs   = sw.ElapsedMilliseconds,
         };
+    }
+
+    public void SetHistory(IEnumerable<AiChatMessage> messages)
+    {
+        _conversationHistory.Clear();
+        _conversationHistory.AddRange(messages);
     }
 
     public void ClearHistory()

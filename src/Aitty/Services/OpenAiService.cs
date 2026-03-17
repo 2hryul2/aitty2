@@ -39,8 +39,9 @@ public class OpenAiService : IAiService
     private string _model = "gpt-4o";
     private string? _systemPrompt;
 
-    public string ProviderName => "openai";
-    public string CurrentModel => _model;
+    public string ProviderName  => "openai";
+    public string CurrentModel  => _model;
+    public string? SystemPrompt => _systemPrompt;
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_apiKey);
     public IReadOnlyList<AiChatMessage> History => _history.AsReadOnly();
 
@@ -58,6 +59,11 @@ public class OpenAiService : IAiService
 
     public void SetModel(string model) => _model = model;
     public void SetSystemPrompt(string? prompt) => _systemPrompt = prompt;
+    public void SetHistory(IEnumerable<AiChatMessage> messages)
+    {
+        _history.Clear();
+        _history.AddRange(messages);
+    }
     public void ClearHistory() => _history.Clear();
 
     // ── 가용성 확인 ───────────────────────────────────────── //
