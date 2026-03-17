@@ -656,8 +656,8 @@ export function AITerminal() {
     term.loadAddon(fitAddon)
     const unicode11Addon = new Unicode11Addon()
     term.loadAddon(unicode11Addon)
-    term.unicode.activeVersion = '11'
     term.open(terminalRef.current)
+    term.unicode.activeVersion = '11'   // open() 후 호출해야 addon.activate()가 완료됨
     fitAddon.fit()
 
     termRef.current = term
