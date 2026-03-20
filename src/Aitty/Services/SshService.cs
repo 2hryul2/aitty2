@@ -15,6 +15,7 @@ public class SshService : IDisposable
 
     private SshClient? _client;
     private ShellStream? _shellStream;
+    private readonly object _streamLock = new();  // ShellStream 동시 Read/Write 보호
     private readonly SshConnectionState _state = new();
     private readonly Queue<string> _recentLines = new();
 
@@ -131,12 +132,14 @@ public class SshService : IDisposable
 
     public void WriteToShell(string data)
     {
-        _shellStream?.Write(data);
-        _shellStream?.Flush();
-        if (!string.IsNullOrWhiteSpace(data) && data != "\r")
+        // 네트워크 I/O만 lock — ShellStream은 thread-safe하지 않으므로 Read와 동시 접근 방지
+        lock (_streamLock)
         {
-            Remember(data.Replace("\r", string.Empty));
+            _shellStream?.Write(data);
+            _shellStream?.Flush();
         }
+        if (!string.IsNullOrWhiteSpace(data) && data != "\r")
+            Remember(data.Replace("\r", string.Empty));
         // Enter 키(\r) 감지 → 새 명령어 시작: 마지막 출력 버퍼 초기화 후 수집 시작
         if (data.Contains('\r'))
         {
@@ -147,41 +150,35 @@ public class SshService : IDisposable
 
     public string? ReadFromShell()
     {
-        if (_shellStream is null || !_shellStream.CanRead)
-            return null;
-
-        if (!_shellStream.DataAvailable)
-            return null;
-
-        try
+        string? output;
+        // 네트워크 I/O만 lock — WriteToShell과 동시 접근 방지
+        lock (_streamLock)
         {
-            var output = _shellStream.Read();
-            Remember(output);
+            if (_shellStream is null || !_shellStream.CanRead) return null;
+            if (!_shellStream.DataAvailable) return null;
+            try { output = _shellStream.Read(); }
+            catch { return null; }  // 채널 닫힘 — 헬스체크에서 감지됨
+        }
 
-            // 명령어 실행 후 출력을 마지막 출력 버퍼에 수집 (ANSI 코드 제거)
-            if (_collectingOutput && !string.IsNullOrEmpty(output))
+        Remember(output);
+
+        // 명령어 실행 후 출력을 마지막 출력 버퍼에 수집 (ANSI 코드 제거)
+        if (_collectingOutput && !string.IsNullOrEmpty(output))
+        {
+            var clean = AnsiRegex.Replace(output, string.Empty);
+            foreach (var line in clean.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
             {
-                var clean = AnsiRegex.Replace(output, string.Empty);
-                foreach (var line in clean.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+                var trimmed = line.Trim();
+                if (!string.IsNullOrWhiteSpace(trimmed))
                 {
-                    var trimmed = line.Trim();
-                    if (!string.IsNullOrWhiteSpace(trimmed))
-                    {
-                        _lastOutputBuffer.Add(trimmed);
-                        if (_lastOutputBuffer.Count > MaxLastOutputLines)
-                            _lastOutputBuffer.RemoveAt(0);
-                    }
+                    _lastOutputBuffer.Add(trimmed);
+                    if (_lastOutputBuffer.Count > MaxLastOutputLines)
+                        _lastOutputBuffer.RemoveAt(0);
                 }
             }
+        }
 
-            return output;
-        }
-        catch (Exception)
-        {
-            // 채널이 닫힌 상태에서 Read() 시 예외 흡수
-            // IsConnected가 false를 반환하므로 헬스체크에서 감지됨
-            return null;
-        }
+        return output;
     }
 
     /// <summary>마지막 명령어 실행 이후 SSH 터미널에 출력된 내용만 반환</summary>

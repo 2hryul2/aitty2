@@ -208,11 +208,15 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
         })
     }
     containerEl?.addEventListener('contextmenu', handleContextMenu)
+    // 터미널 영역 클릭 시 xterm.js 포커스 복원 — AI 패널 이동 후 돌아올 때 즉시 입력 가능
+    const handleClick = () => term.focus()
+    containerEl?.addEventListener('click', handleClick)
 
     logger.info('Terminal initialized')
 
     return () => {
       containerEl?.removeEventListener('contextmenu', handleContextMenu)
+      containerEl?.removeEventListener('click', handleClick)
       term.dispose()
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -255,6 +259,8 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
       // Start polling for shell output (MOTD, prompt, etc.)
       startPolling()
       startHealthCheck(showBanner)
+      // WebView2 렌더 사이클 후 xterm.js 포커스 확보 — 접속 후 즉시 타이핑 가능
+      setTimeout(() => termRef.current?.focus(), 50)
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'Connection failed'
       termRef.current?.writeln(`\x1b[31mFailed: ${msg}\x1b[0m`)
