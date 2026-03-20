@@ -211,12 +211,16 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
     // 터미널 영역 클릭 시 xterm.js 포커스 복원 — AI 패널 이동 후 돌아올 때 즉시 입력 가능
     const handleClick = () => term.focus()
     containerEl?.addEventListener('click', handleClick)
+    // AI 스트리밍 종료 시 포커스 복원 — 회색 화면 복구 후 SSH 입력 즉시 활성화
+    const handleStreamingEnd = () => term.focus()
+    window.addEventListener('ai-streaming-end', handleStreamingEnd)
 
     logger.info('Terminal initialized')
 
     return () => {
       containerEl?.removeEventListener('contextmenu', handleContextMenu)
       containerEl?.removeEventListener('click', handleClick)
+      window.removeEventListener('ai-streaming-end', handleStreamingEnd)
       term.dispose()
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps

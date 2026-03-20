@@ -447,14 +447,7 @@ export function AITerminal() {
     ]
     for (const { text, color } of indicatorLines) {
       if (!isProcessingRef.current) break
-      term.write(color)
-      for (const char of text) {
-        if (!isProcessingRef.current) break
-        term.write(char)
-        await new Promise(r => setTimeout(r, 15))
-      }
-      term.write('\x1b[0m')
-      if (isProcessingRef.current) term.write('\r\n')
+      term.write(`${color}${text}\x1b[0m\r\n`)
     }
     if (isProcessingRef.current) term.write('\r\n')
 
@@ -607,14 +600,7 @@ export function AITerminal() {
     ]
     for (const { text, color } of indicatorLines) {
       if (!isProcessingRef.current) break
-      term.write(color)
-      for (const char of text) {
-        if (!isProcessingRef.current) break
-        term.write(char)
-        await new Promise(r => setTimeout(r, 15))
-      }
-      term.write('\x1b[0m')
-      if (isProcessingRef.current) term.write('\r\n')
+      term.write(`${color}${text}\x1b[0m\r\n`)
     }
     if (isProcessingRef.current) term.write('\r\n')
 
@@ -637,6 +623,7 @@ export function AITerminal() {
     } finally {
       isProcessingRef.current = false
       setIsStreaming(false)
+      window.dispatchEvent(new CustomEvent('ai-streaming-end'))
     }
   }, [])
 
