@@ -1,4 +1,4 @@
-# Aitty v0.1.0 — 사용자 매뉴얼
+# Aitty v0.2.3 — 사용자 매뉴얼
 
 > SSH + AI 통합 터미널 클라이언트 (Windows 전용)
 > 신한DS AX본부 내부 도구
@@ -11,7 +11,7 @@
 ┌─────────────────────────────────────────────────────────────────────┐
 │  File  Edit  View                                          [─][□][×] │
 ├──────────────────────────────────────────────────────────────────────┤
-│                    Aitty v0.1.0 — SSH + AI Terminal                  │
+│                    Aitty v0.2.3 — SSH + AI Terminal                  │
 │               SSH AI Terminal for Windows | 신한DS AX본부            │
 ├─────────────────────────────────┬──── ◀ ▶ ────────────────────────┤
 │                                 │                                    │
@@ -85,6 +85,8 @@
 |----------|------|-----------|
 | **Ollama (Local)** | 로컬 서버, 무제한 사용 | Endpoint URL |
 | **Google Gemini** | 클라우드 API, 고성능 | Gemini API Key |
+| **Anthropic Claude** | 클라우드 API, 고성능 추론 | Claude API Key |
+| **OpenAI** | GPT 시리즈, 범용 | OpenAI API Key |
 
 **Provider 드롭다운**에서 선택 → 입력 필드가 자동 전환
 
@@ -288,4 +290,4 @@ Conversation history cleared.
 
 ---
 
-*Aitty v0.1.0 | 신한DS AX본부 | 2026-03-09*
+*Aitty v0.2.3 | 신한DS AX본부 | 2026-03-22*

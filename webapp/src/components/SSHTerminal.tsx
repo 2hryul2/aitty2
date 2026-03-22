@@ -4,9 +4,9 @@ import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 import { useSSHConnection } from '@hooks/useSSHConnection'
 import { useTerminalResize } from '@hooks/useTerminalResize'
-import { SSHConnection } from '@types/ssh'
+import { SSHConnection } from '@app-types/ssh'
 import { logger } from '@utils/logger'
-import { ssh as sshBridge } from '@bridge/ipcBridge'
+import { ssh as sshBridge, keys as keysBridge } from '@bridge/ipcBridge'
 import '../styles/terminal.css'
 
 export interface SSHTerminalProps {
@@ -17,7 +17,9 @@ export interface SSHTerminalProps {
   autoConnect?: boolean
 }
 
-const POLL_INTERVAL = 100         // ms
+const POLL_INTERVAL_MIN = 50      // ms — data present
+const POLL_INTERVAL_MAX = 500     // ms — idle ceiling
+const POLL_INTERVAL_STEP = 50     // ms — backoff increment per empty read
 const HEALTH_CHECK_INTERVAL = 4_000  // ms — 5초 이내 disconnect 감지
 const DEFAULT_SSH_HOST = import.meta.env.VITE_DEFAULT_SSH_HOST || ''
 const DEFAULT_SSH_PORT = import.meta.env.VITE_DEFAULT_SSH_PORT || '22'
@@ -27,13 +29,15 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
   const terminalRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pollIntervalRef = useRef(POLL_INTERVAL_MIN)
   const healthCheckTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const isPollingRef = useRef(false)
 
   const { state: sshState, connect, disconnect, shellWrite, shellRead } = useSSHConnection()
   const shellWriteRef = useRef(shellWrite)
   const [showConnectForm, setShowConnectForm] = useState(true)
+  const [availableKeys, setAvailableKeys] = useState<string[]>([])
   const [formData, setFormData] = useState({
     host: DEFAULT_SSH_HOST,
     port: DEFAULT_SSH_PORT,
@@ -41,6 +45,13 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
     password: '',
     privateKey: '',
   })
+
+  // Fetch available SSH keys on mount
+  useEffect(() => {
+    keysBridge.list().then(result => {
+      if (result.keys?.length) setAvailableKeys(result.keys)
+    }).catch(() => { /* key listing not critical */ })
+  }, [])
 
   // Keep ref in sync with latest shellWrite (avoids stale closure in onData)
   useEffect(() => {
@@ -53,35 +64,55 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
     }
   })
 
-  // Shell output polling
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
+    isPollingRef.current = false
+  }, [])
+
+  // Shell output polling (adaptive: fast when data present, slow when idle)
   const startPolling = useCallback(() => {
     if (pollTimerRef.current) return
+    pollIntervalRef.current = POLL_INTERVAL_MIN
 
-    pollTimerRef.current = setInterval(async () => {
-      if (isPollingRef.current) return
+    const poll = async () => {
+      if (isPollingRef.current) {
+        pollTimerRef.current = setTimeout(poll, pollIntervalRef.current)
+        return
+      }
       isPollingRef.current = true
 
       try {
         const data = await shellRead()
         if (data && termRef.current) {
           termRef.current.write(data)
+          pollIntervalRef.current = POLL_INTERVAL_MIN // data received — fast
+        } else {
+          // no data — gradually back off
+          pollIntervalRef.current = Math.min(
+            pollIntervalRef.current + POLL_INTERVAL_STEP,
+            POLL_INTERVAL_MAX,
+          )
         }
       } catch {
         // Connection lost or read error — stop polling
         stopPolling()
+        return
       } finally {
         isPollingRef.current = false
       }
-    }, POLL_INTERVAL)
-  }, [shellRead])
 
-  const stopPolling = useCallback(() => {
-    if (pollTimerRef.current) {
-      clearInterval(pollTimerRef.current)
-      pollTimerRef.current = null
+      // schedule next poll only if not stopped
+      if (pollTimerRef.current !== null) {
+        pollTimerRef.current = setTimeout(poll, pollIntervalRef.current)
+      }
     }
-    isPollingRef.current = false
-  }, [])
+
+    // sentinel value to indicate "running" before first setTimeout fires
+    pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MIN)
+  }, [shellRead, stopPolling])
 
   // ── 10초 SSH 헬스체크 ────────────────────────────────────────
   const stopHealthCheck = useCallback(() => {
@@ -187,6 +218,11 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
       shellWriteRef.current(data).catch(err => {
         logger.error('Shell write error', { error: err })
       })
+    })
+
+    // Send terminal resize to SSH server
+    term.onResize(({ cols, rows }) => {
+      sshBridge.resize(cols, rows).catch(() => { /* resize best-effort */ })
     })
 
     // 드래그 선택 → 클립보드 자동 복사
@@ -379,12 +415,24 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
           <div className="form-row">
             <div className="form-group" style={{ flex: 1 }}>
               <label>Private Key (optional)</label>
-              <input
-                type="text"
-                value={formData.privateKey}
-                onChange={e => setFormData(p => ({ ...p, privateKey: e.target.value }))}
-                placeholder="~/.ssh/id_rsa"
-              />
+              {availableKeys.length > 0 ? (
+                <select
+                  value={formData.privateKey}
+                  onChange={e => setFormData(p => ({ ...p, privateKey: e.target.value }))}
+                >
+                  <option value="">None (use password)</option>
+                  {availableKeys.map(k => (
+                    <option key={k} value={k}>{k.replace(/^.*[/\\]/, '')}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={formData.privateKey}
+                  onChange={e => setFormData(p => ({ ...p, privateKey: e.target.value }))}
+                  placeholder="~/.ssh/id_rsa"
+                />
+              )}
             </div>
           </div>
           <div className="form-row">

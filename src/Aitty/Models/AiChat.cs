@@ -27,7 +27,7 @@ public class AiChatResponse
 public class AiConfig
 {
     public string ApiKey { get; set; } = string.Empty;
-    public string Model { get; set; } = "claude-sonnet-4-6-20250514";
+    public string Model { get; set; } = "claude-sonnet-4-5-20250929";
     public string? SystemPrompt { get; set; }
     public int MaxTokens { get; set; } = 4096;
 }

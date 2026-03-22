@@ -3,21 +3,22 @@ import { config as configBridge } from '@bridge/ipcBridge'
 import { logger } from '@utils/logger'
 import { SSHTerminal } from '@components/SSHTerminal'
 import { AITerminal } from '@components/AITerminal'
-import type { SSHConnection } from '@types/ssh'
+import type { AppConfig } from '@app-types/config'
+import type { SSHConnection } from '@app-types/ssh'
 import './App.css'
 
-const DEFAULT_CONFIG = {
+const DEFAULT_CONFIG: AppConfig = {
   theme: 'dark',
   fontSize: 12,
   fontFamily: 'Consolas, "Courier New"',
-  sshConnections: [] as any[],
+  sshConnections: [],
 }
 
 const SPLIT_MIN = 20  // 최소 패널 너비 %
 const SPLIT_MAX = 80  // 최대 패널 너비 %
 
 function App() {
-  const [config, setConfig] = useState<any>(null)
+  const [config, setConfig] = useState<AppConfig | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [sshConnection, setSshConnection] = useState<SSHConnection | undefined>()
   const [sshConnected, setSshConnected] = useState(false)

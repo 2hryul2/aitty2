@@ -32,8 +32,10 @@ public class OpenAiService : IAiService
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private readonly HttpClient _httpClient;
+    private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromMinutes(5) };
+    private readonly HttpClient _httpClient = SharedHttpClient;
     private readonly List<AiChatMessage> _history = new();
+    private readonly object _historyLock = new();
 
     private string _apiKey = string.Empty;
     private string _model = "gpt-4o";
@@ -45,26 +47,20 @@ public class OpenAiService : IAiService
     public bool IsConfigured => !string.IsNullOrWhiteSpace(_apiKey);
     public IReadOnlyList<AiChatMessage> History => _history.AsReadOnly();
 
-    public OpenAiService()
-    {
-        _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-    }
+    public OpenAiService() { }
 
     public void SetApiKey(string apiKey)
     {
         _apiKey = apiKey.Trim();
-        _httpClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", _apiKey);
     }
 
     public void SetModel(string model) => _model = model;
     public void SetSystemPrompt(string? prompt) => _systemPrompt = prompt;
     public void SetHistory(IEnumerable<AiChatMessage> messages)
     {
-        _history.Clear();
-        _history.AddRange(messages);
+        lock (_historyLock) { _history.Clear(); _history.AddRange(messages); }
     }
-    public void ClearHistory() => _history.Clear();
+    public void ClearHistory() { lock (_historyLock) _history.Clear(); }
 
     // ── 가용성 확인 ───────────────────────────────────────── //
 
@@ -73,7 +69,9 @@ public class OpenAiService : IAiService
         if (!IsConfigured) return false;
         try
         {
-            using var response = await _httpClient.GetAsync(ModelsUrl, ct);
+            using var req = new HttpRequestMessage(HttpMethod.Get, ModelsUrl);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+            using var response = await _httpClient.SendAsync(req, ct);
             return response.IsSuccessStatusCode;
         }
         catch { return false; }
@@ -86,7 +84,9 @@ public class OpenAiService : IAiService
         if (!IsConfigured) return DefaultModels.ToList();
         try
         {
-            using var response = await _httpClient.GetAsync(ModelsUrl, ct);
+            using var req = new HttpRequestMessage(HttpMethod.Get, ModelsUrl);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+            using var response = await _httpClient.SendAsync(req, ct);
             if (!response.IsSuccessStatusCode) return DefaultModels.ToList();
 
             var json = await response.Content.ReadAsStringAsync(ct);
@@ -115,17 +115,23 @@ public class OpenAiService : IAiService
             throw new InvalidOperationException("OpenAI API 키가 설정되지 않았습니다.");
 
         var sw = Stopwatch.StartNew();
-        _history.Add(new AiChatMessage { Role = "user", Content = userMessage });
+        lock (_historyLock)
+            _history.Add(new AiChatMessage { Role = "user", Content = userMessage });
 
         var body = BuildRequestBody(stream: false);
         var json = JsonSerializer.Serialize(body, JsonOptions);
-        using var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var httpReq = new HttpRequestMessage(HttpMethod.Post, ApiUrl)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+        httpReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
-        using var response = await _httpClient.PostAsync(ApiUrl, content, ct);
+        using var response = await _httpClient.SendAsync(httpReq, ct);
         var responseText = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
         {
-            _history.RemoveAt(_history.Count - 1);
+            lock (_historyLock)
+                _history.RemoveAt(_history.Count - 1);
             throw new Exception(BuildApiError(response.StatusCode, responseText));
         }
 
@@ -147,7 +153,8 @@ public class OpenAiService : IAiService
             outputTokens = usage.TryGetProperty("completion_tokens", out var ct2) ? ct2.GetInt32() : 0;
         }
 
-        _history.Add(new AiChatMessage { Role = "assistant", Content = text });
+        lock (_historyLock)
+            _history.Add(new AiChatMessage { Role = "assistant", Content = text });
         sw.Stop();
 
         return new AiChatResponse
@@ -169,7 +176,8 @@ public class OpenAiService : IAiService
             throw new InvalidOperationException("OpenAI API 키가 설정되지 않았습니다.");
 
         var sw = Stopwatch.StartNew();
-        _history.Add(new AiChatMessage { Role = "user", Content = userMessage });
+        lock (_historyLock)
+            _history.Add(new AiChatMessage { Role = "user", Content = userMessage });
 
         var body = BuildRequestBody(stream: true);
         var json = JsonSerializer.Serialize(body, JsonOptions);
@@ -178,11 +186,13 @@ public class OpenAiService : IAiService
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json"),
         };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
 
         using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         if (!response.IsSuccessStatusCode)
         {
-            _history.RemoveAt(_history.Count - 1);
+            lock (_historyLock)
+                _history.RemoveAt(_history.Count - 1);
             var errorBody = await response.Content.ReadAsStringAsync(ct);
             throw new Exception(BuildApiError(response.StatusCode, errorBody));
         }
@@ -243,7 +253,8 @@ public class OpenAiService : IAiService
 
         sw.Stop();
         var fullContent = builder.ToString();
-        _history.Add(new AiChatMessage { Role = "assistant", Content = fullContent });
+        lock (_historyLock)
+            _history.Add(new AiChatMessage { Role = "assistant", Content = fullContent });
 
         return new AiChatResponse
         {
@@ -256,7 +267,7 @@ public class OpenAiService : IAiService
         };
     }
 
-    public void Dispose() => _httpClient.Dispose();
+    public void Dispose() { GC.SuppressFinalize(this); }
 
     // ── 내부 헬퍼 ─────────────────────────────────────────── //
 

@@ -30,8 +30,10 @@ public class ClaudeApiService : IAiService
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
-    private readonly HttpClient _httpClient;
+    private static readonly HttpClient SharedHttpClient = new();
+    private readonly HttpClient _httpClient = SharedHttpClient;
     private readonly List<AiChatMessage> _conversationHistory = new();
+    private readonly object _historyLock = new();
 
     private string _apiKey = string.Empty;
     private string _model = DefaultModel;
@@ -50,11 +52,7 @@ public class ClaudeApiService : IAiService
     public Task<List<string>> ListModelsAsync(CancellationToken ct = default)
         => Task.FromResult(new List<string>(KnownModels));
 
-    public ClaudeApiService()
-    {
-        _httpClient = new HttpClient();
-        _httpClient.DefaultRequestHeaders.Add("anthropic-version", ApiVersion);
-    }
+    public ClaudeApiService() { }
 
     public void Configure(AiConfig config)
     {
@@ -62,16 +60,11 @@ public class ClaudeApiService : IAiService
         _model = string.IsNullOrEmpty(config.Model) ? DefaultModel : config.Model;
         _systemPrompt = config.SystemPrompt;
         _maxTokens = config.MaxTokens > 0 ? config.MaxTokens : 4096;
-
-        _httpClient.DefaultRequestHeaders.Remove("x-api-key");
-        _httpClient.DefaultRequestHeaders.Add("x-api-key", _apiKey);
     }
 
     public void SetApiKey(string apiKey)
     {
         _apiKey = apiKey;
-        _httpClient.DefaultRequestHeaders.Remove("x-api-key");
-        _httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
     }
 
     public void SetModel(string model)
@@ -89,29 +82,36 @@ public class ClaudeApiService : IAiService
         if (!IsConfigured)
             throw new InvalidOperationException("Claude API key not configured. Use 'config set api-key <KEY>' to set it.");
 
-        _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
+        lock (_historyLock)
+            _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
+
+        List<ClaudeMessageItem> messagesCopy;
+        lock (_historyLock)
+            messagesCopy = _conversationHistory.Select(m => new ClaudeMessageItem { Role = m.Role, Content = m.Content }).ToList();
 
         var requestBody = new ClaudeRequest
         {
             Model = _model,
             MaxTokens = _maxTokens,
             System = _systemPrompt,
-            Messages = _conversationHistory.Select(m => new ClaudeMessageItem
-            {
-                Role = m.Role,
-                Content = m.Content
-            }).ToList()
+            Messages = messagesCopy
         };
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);
-        var content = new StringContent(json, Encoding.UTF8, "application/json");
+        using var request = new HttpRequestMessage(HttpMethod.Post, ApiUrl)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("anthropic-version", ApiVersion);
+        request.Headers.Add("x-api-key", _apiKey);
 
-        var response = await _httpClient.PostAsync(ApiUrl, content, ct);
+        var response = await _httpClient.SendAsync(request, ct);
         var responseJson = await response.Content.ReadAsStringAsync(ct);
 
         if (!response.IsSuccessStatusCode)
         {
-            _conversationHistory.RemoveAt(_conversationHistory.Count - 1);
+            lock (_historyLock)
+                _conversationHistory.RemoveAt(_conversationHistory.Count - 1);
             var errorDetail = TryExtractError(responseJson);
             throw new HttpRequestException($"Claude API error ({response.StatusCode}): {errorDetail}");
         }
@@ -123,7 +123,8 @@ public class ClaudeApiService : IAiService
         var assistantContent = string.Join("\n",
             result.Content?.Where(c => c.Type == "text").Select(c => c.Text) ?? []);
 
-        _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = assistantContent });
+        lock (_historyLock)
+            _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = assistantContent });
 
         return new AiChatResponse
         {
@@ -140,7 +141,12 @@ public class ClaudeApiService : IAiService
             throw new InvalidOperationException("Claude API key not configured. Use 'config set api-key <KEY>' to set it.");
 
         var sw = Stopwatch.StartNew();
-        _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
+        lock (_historyLock)
+            _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
+
+        List<ClaudeMessageItem> messagesCopy;
+        lock (_historyLock)
+            messagesCopy = _conversationHistory.Select(m => new ClaudeMessageItem { Role = m.Role, Content = m.Content }).ToList();
 
         var requestBody = new ClaudeRequest
         {
@@ -148,11 +154,7 @@ public class ClaudeApiService : IAiService
             MaxTokens = _maxTokens,
             System = _systemPrompt,
             Stream = true,
-            Messages = _conversationHistory.Select(m => new ClaudeMessageItem
-            {
-                Role = m.Role,
-                Content = m.Content
-            }).ToList()
+            Messages = messagesCopy
         };
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);
@@ -160,12 +162,15 @@ public class ClaudeApiService : IAiService
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
+        request.Headers.Add("anthropic-version", ApiVersion);
+        request.Headers.Add("x-api-key", _apiKey);
 
         var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
         if (!response.IsSuccessStatusCode)
         {
-            _conversationHistory.RemoveAt(_conversationHistory.Count - 1);
+            lock (_historyLock)
+                _conversationHistory.RemoveAt(_conversationHistory.Count - 1);
             var errorJson = await response.Content.ReadAsStringAsync(ct);
             var errorDetail = TryExtractError(errorJson);
             throw new HttpRequestException($"Claude API error ({response.StatusCode}): {errorDetail}");
@@ -234,7 +239,8 @@ public class ClaudeApiService : IAiService
 
         sw.Stop();
         var result = contentBuilder.ToString();
-        _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = result });
+        lock (_historyLock)
+            _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = result });
 
         return new AiChatResponse
         {
@@ -249,18 +255,21 @@ public class ClaudeApiService : IAiService
 
     public void SetHistory(IEnumerable<AiChatMessage> messages)
     {
-        _conversationHistory.Clear();
-        _conversationHistory.AddRange(messages);
+        lock (_historyLock)
+        {
+            _conversationHistory.Clear();
+            _conversationHistory.AddRange(messages);
+        }
     }
 
     public void ClearHistory()
     {
-        _conversationHistory.Clear();
+        lock (_historyLock)
+            _conversationHistory.Clear();
     }
 
     public void Dispose()
     {
-        _httpClient.Dispose();
         GC.SuppressFinalize(this);
     }
 

@@ -17,16 +17,8 @@
     <PackageReference Include="SSH.NET" Version="2025.1.0" />
   </ItemGroup>
 
-  <!-- React 빌드 산출물: publish 시 wwwroot 폴더로 자동 포함 -->
-  <ItemGroup>
-    <Content Include="wwwroot\**\*">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
-    </Content>
-  </ItemGroup>
-
   <!-- dotnet build/publish 전 React 자동 빌드 + wwwroot 동기화 -->
-  <Target Name="BuildReactApp" BeforeTargets="BeforeBuild" Condition="Exists('$(MSBuildThisFileDirectory)..\..\webapp\package.json')">
+  <Target Name="BuildReactApp" BeforeTargets="BeforeBuild" Condition="Exists('$(MSBuildThisFileDirectory)..\..\webapp\package.json') AND '$(SkipReactBuild)' != 'true'">
     <PropertyGroup>
       <WebappDir>$(MSBuildThisFileDirectory)..\..\webapp</WebappDir>
       <WwwrootDir>$(MSBuildThisFileDirectory)wwwroot</WwwrootDir>
@@ -37,6 +29,17 @@
 
     <Message Text="[Aitty] dist → wwwroot 동기화" Importance="high" />
     <Exec Command="robocopy &quot;$(WebappDir)\dist&quot; &quot;$(WwwrootDir)&quot; /MIR /NJH /NJS /NDL /NC /NS" IgnoreExitCode="true" />
+  </Target>
+
+  <!-- React 빌드 후 wwwroot 파일을 동적으로 Content에 등록 (BeforeBuild 이후 평가) -->
+  <Target Name="IncludeWwwroot" AfterTargets="BuildReactApp" BeforeTargets="BeforeCompile">
+    <ItemGroup>
+      <Content Include="wwwroot\**\*" Condition="Exists('$(MSBuildThisFileDirectory)wwwroot')">
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </Content>
+    </ItemGroup>
   </Target>
 
 </Project>

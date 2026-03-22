@@ -10,6 +10,7 @@ namespace Aitty.Services;
 /// </summary>
 public static class AiChatLogger
 {
+    private const long MaxLogFileBytes   = 5 * 1024 * 1024; // 5 MB
     private const int MaxSystemPreview  = 300;
     private const int MaxUserPreview    = 500;
     private const int MaxContentPreview = 600;
@@ -57,6 +58,12 @@ public static class AiChatLogger
             sb.AppendLine();
             sb.AppendLine("--------------------------------------------------------------------------------");
             sb.AppendLine();
+
+            if (File.Exists(filePath) && new FileInfo(filePath).Length > MaxLogFileBytes)
+            {
+                var rotatedPath = filePath + $".{DateTime.Now:HHmmss}.bak";
+                File.Move(filePath, rotatedPath);
+            }
 
             await File.AppendAllTextAsync(filePath, sb.ToString(), Encoding.UTF8, ct);
         }

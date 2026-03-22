@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.IO;
@@ -56,8 +57,8 @@ public class IpcHandler
     {
         IpcResponse response;
 
-        // [M-1] 메시지 크기 제한
-        if (e.WebMessageAsJson.Length > MaxMessageBytes)
+        // [M-1] 메시지 크기 제한 (UTF-8 바이트 단위)
+        if (Encoding.UTF8.GetByteCount(e.WebMessageAsJson) > MaxMessageBytes)
         {
             var rejected = new IpcResponse
             {
@@ -88,7 +89,8 @@ public class IpcHandler
         }
         catch (Exception ex)
         {
-            response = new IpcResponse { Id = TryExtractId(e.WebMessageAsJson), Type = "error", Error = ex.Message };
+            Debug.WriteLine($"[IPC] Unhandled error: {ex}");
+            response = new IpcResponse { Id = TryExtractId(e.WebMessageAsJson), Type = "error", Error = "An internal error occurred" };
         }
 
         _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(response, JsonOptions));
@@ -105,6 +107,7 @@ public class IpcHandler
             "ssh:state"                => HandleSshState(),
             "ssh:shell:write"          => HandleSshShellWrite(msg.Payload),
             "ssh:shell:read"           => HandleSshShellRead(),
+            "ssh:resize"               => HandleSshResize(msg.Payload),
 
             "config:load"              => await HandleConfigLoad(),
             "config:save"              => await HandleConfigSave(msg.Payload),
@@ -224,6 +227,7 @@ public class IpcHandler
 
     private object HandleSshShellWrite(object? payload) { _sshService.WriteToShell(DeserializePayload<ShellWritePayload>(payload).Data); return new { success = true }; }
     private object HandleSshShellRead() => new { data = _sshService.ReadFromShell() };
+    private object HandleSshResize(object? payload) { var data = DeserializePayload<ResizePayload>(payload); _sshService.ResizeTerminal(data.Cols, data.Rows); return new { success = true }; }
 
     // ── Config / Keys ──────────────────────────────────────── //
 
@@ -248,6 +252,7 @@ public class IpcHandler
     private async Task<object> HandleAiStream(IpcMessage msg)
     {
         var data = DeserializePayload<AiChatRequest>(msg.Payload);
+        _streamingCts?.Dispose();
         _streamingCts = new CancellationTokenSource();
 
         var response = await _aiManager.Active.SendStreamingAsync(data.Message, chunk =>
@@ -466,3 +471,4 @@ internal class EndpointPayload     { public string Url        { get; set; } = st
 internal class ProviderPayload     { public string Provider   { get; set; } = string.Empty; }
 internal class ApiKeyPayload       { public string Provider   { get; set; } = string.Empty; public string ApiKey { get; set; } = string.Empty; }
 internal class ApiLogPayload       { public string Content    { get; set; } = string.Empty; }
+internal class ResizePayload       { public uint   Cols       { get; set; } = 120; public uint Rows { get; set; } = 40; }

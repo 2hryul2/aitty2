@@ -55,9 +55,10 @@ public static class SshAuditLogger
                 Port         = port,
                 Command      = MaskSensitive(command),
                 ExitStatus   = success ? "success" : "failure",
-                OutputPreview = outputPreview.Length > 500
-                    ? outputPreview[..500] + "…"
-                    : outputPreview,
+                OutputPreview = MaskSensitive(
+                    outputPreview.Length > 500
+                        ? outputPreview[..500] + "…"
+                        : outputPreview),
                 DurationMs   = durationMs
             };
 

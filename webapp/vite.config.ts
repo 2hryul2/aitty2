@@ -15,7 +15,7 @@ export default defineConfig({
     crossOriginLoading: false,  // WebView2 virtual host에서 crossorigin 속성 제거
     rollupOptions: {
       // Node.js 전용 모듈은 번들 제외 (브라우저 환경에서 불필요)
-      external: ['fs', 'path', 'os', 'node-ssh', 'node-pty', 'ssh2'],
+      external: ['fs', 'path', 'os'],
       output: {
         globals: {},
       },
@@ -25,8 +25,7 @@ export default defineConfig({
     alias: {
       '@components': path.resolve(__dirname, 'src/components'),
       '@hooks': path.resolve(__dirname, 'src/hooks'),
-      '@services': path.resolve(__dirname, 'src/services'),
-      '@types': path.resolve(__dirname, 'src/types'),
+      '@app-types': path.resolve(__dirname, 'src/types'),
       '@utils': path.resolve(__dirname, 'src/utils'),
       '@styles': path.resolve(__dirname, 'src/styles'),
       '@bridge': path.resolve(__dirname, 'src/bridge'),

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import { SSHConnection, SSHConnectionState } from '@types/ssh'
+import { SSHConnection, SSHConnectionState } from '@app-types/ssh'
 import { ssh } from '@bridge/ipcBridge'
 import { logger } from '@utils/logger'
 
@@ -25,7 +25,7 @@ export function useSSHConnection() {
       })
 
       if (!result.success) {
-        throw new Error(result.error || 'Connection failed')
+        throw new Error('Connection failed')
       }
 
       setState(prev => ({

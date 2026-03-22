@@ -14,8 +14,10 @@ namespace Aitty.Services;
 /// </summary>
 public class GeminiService : IAiService
 {
-    private readonly HttpClient _httpClient;
+    private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromMinutes(5) };
+    private readonly HttpClient _httpClient = SharedHttpClient;
     private readonly List<AiChatMessage> _history = new();
+    private readonly object _historyLock = new();
 
     private const string BaseUrl = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -40,10 +42,7 @@ public class GeminiService : IAiService
     private DateTime _modelsCachedAt = DateTime.MinValue;
     private static readonly TimeSpan ModelCacheTtl = TimeSpan.FromMinutes(10);
 
-    public GeminiService()
-    {
-        _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-    }
+    public GeminiService() { }
 
     public string ProviderName  => "gemini";
     public string CurrentModel  => _model;
@@ -62,10 +61,9 @@ public class GeminiService : IAiService
     public void SetSystemPrompt(string? prompt) => _systemPrompt = prompt;
     public void SetHistory(IEnumerable<AiChatMessage> messages)
     {
-        _history.Clear();
-        _history.AddRange(messages);
+        lock (_historyLock) { _history.Clear(); _history.AddRange(messages); }
     }
-    public void ClearHistory() => _history.Clear();
+    public void ClearHistory() { lock (_historyLock) _history.Clear(); }
 
     // ── 가용성 확인 ───────────────────────────────────────── //
 
@@ -141,22 +139,42 @@ public class GeminiService : IAiService
         if (!IsConfigured)
             throw new InvalidOperationException("Gemini API 키가 설정되지 않았습니다.");
 
-        _history.Add(new AiChatMessage { Role = "user", Content = userMessage });
+        lock (_historyLock)
+            _history.Add(new AiChatMessage { Role = "user", Content = userMessage });
 
         var body = BuildRequestBody();
         var json = JsonSerializer.Serialize(body);
         using var content = new StringContent(json, Encoding.UTF8, "application/json");
 
         var url = $"{BaseUrl}/models/{_model}:generateContent?key={_apiKey}";
-        using var response = await _httpClient.PostAsync(url, content, ct);
-        var responseText = await response.Content.ReadAsStringAsync(ct);
-        if (!response.IsSuccessStatusCode)
-            throw new Exception(BuildApiError(response.StatusCode, responseText));
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.PostAsync(url, content, ct);
+        }
+        catch
+        {
+            lock (_historyLock)
+                _history.RemoveAt(_history.Count - 1);
+            throw;
+        }
 
-        var text = ParseResponseText(responseText);
-        _history.Add(new AiChatMessage { Role = "assistant", Content = text });
+        using (response)
+        {
+            var responseText = await response.Content.ReadAsStringAsync(ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                lock (_historyLock)
+                    _history.RemoveAt(_history.Count - 1);
+                throw new Exception(BuildApiError(response.StatusCode, responseText));
+            }
 
-        return new AiChatResponse { Content = text, Model = _model };
+            var text = ParseResponseText(responseText);
+            lock (_historyLock)
+                _history.Add(new AiChatMessage { Role = "assistant", Content = text });
+
+            return new AiChatResponse { Content = text, Model = _model };
+        }
     }
 
     // ── SSE 스트리밍 전송 (429 자동 재시도 포함) ─────────────── //
@@ -168,9 +186,12 @@ public class GeminiService : IAiService
 
         var sw = Stopwatch.StartNew();
 
-        // 이력 추가 (최종 실패 시 롤백)
-        var historyIndex = _history.Count;
-        _history.Add(new AiChatMessage { Role = "user", Content = userMessage });
+        int historyIndex;
+        lock (_historyLock)
+        {
+            historyIndex = _history.Count;
+            _history.Add(new AiChatMessage { Role = "user", Content = userMessage });
+        }
 
         Exception? lastEx = null;
 
@@ -180,7 +201,8 @@ public class GeminiService : IAiService
             {
                 var fullContent = await DoStreamAsync(onChunk, ct);
                 sw.Stop();
-                _history.Add(new AiChatMessage { Role = "assistant", Content = fullContent });
+                lock (_historyLock)
+                    _history.Add(new AiChatMessage { Role = "assistant", Content = fullContent });
 
                 return new AiChatResponse
                 {
@@ -208,8 +230,11 @@ public class GeminiService : IAiService
         }
 
         // 모든 재시도 실패 → 이력 롤백
-        if (_history.Count > historyIndex)
-            _history.RemoveAt(historyIndex);
+        lock (_historyLock)
+        {
+            if (_history.Count > historyIndex)
+                _history.RemoveAt(historyIndex);
+        }
 
         throw lastEx!;
     }
@@ -269,7 +294,7 @@ public class GeminiService : IAiService
         return match.Success && int.TryParse(match.Groups[1].Value, out var sec) ? sec : null;
     }
 
-    public void Dispose() => _httpClient.Dispose();
+    public void Dispose() { GC.SuppressFinalize(this); }
 
     // ── 내부 헬퍼 ─────────────────────────────────────────── //
 

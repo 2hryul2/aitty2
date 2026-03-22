@@ -18,8 +18,7 @@ public partial class MainWindow : Window
     private readonly SessionService _sessionService;
     private IpcHandler? _ipcHandler;
 
-    // [L-1] index.html 메모리 캐시: 앱 시작 시 1회 로드, 이후 매 요청마다 디스크 I/O 제거
-    private byte[]? _indexHtmlCache;
+    // (removed: _indexHtmlCache — now using direct file + virtual host mapping)
 
     // [H-3] Release 빌드에서 AITTY_DEV 환경변수 우회 완전 차단
     private static bool IsDev =>
@@ -119,28 +118,22 @@ public partial class MainWindow : Window
             {
                 var wwwroot = System.IO.Path.Combine(AppContext.BaseDirectory, "wwwroot");
 
-                // [L-1] index.html 메모리 캐시: 초기화 시점에 1회 로드
-                await PreloadIndexHtmlAsync(wwwroot);
+                // 런타임에 crossorigin 속성 제거 (1회성)
+                var indexPath = System.IO.Path.Combine(wwwroot, "index.html");
+                if (File.Exists(indexPath))
+                {
+                    var html = await File.ReadAllTextAsync(indexPath, Encoding.UTF8);
+                    if (html.Contains(" crossorigin"))
+                    {
+                        html = html.Replace(" crossorigin", "");
+                        await File.WriteAllTextAsync(indexPath, html, Encoding.UTF8);
+                    }
+                }
 
-                // 가상 호스트 등록
+                // 가상 호스트 등록 — index.html + JS/CSS 모두 서빙
                 webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                     "app.local", wwwroot,
                     CoreWebView2HostResourceAccessKind.Allow);
-
-                // index.html 요청 가로채기 — crossorigin 속성 제거 (CORS 우회)
-                webView.CoreWebView2.AddWebResourceRequestedFilter(
-                    "https://app.local/index.html",
-                    CoreWebView2WebResourceContext.Document);
-                webView.CoreWebView2.WebResourceRequested += (s, args) =>
-                {
-                    // [L-1] 캐시된 바이트 배열 사용 (디스크 I/O 없음)
-                    if (_indexHtmlCache is null) return;
-
-                    args.Response = webView.CoreWebView2.Environment
-                        .CreateWebResourceResponse(
-                            new MemoryStream(_indexHtmlCache), 200, "OK",
-                            "Content-Type: text/html; charset=utf-8");
-                };
 
                 webView.CoreWebView2.Navigate("https://app.local/index.html");
             }
@@ -150,17 +143,6 @@ public partial class MainWindow : Window
             MessageBox.Show($"WebView2 초기화 실패:\n{ex.Message}\n\n{ex.StackTrace}",
                 "Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
-    }
-
-    /// <summary>[L-1] index.html을 메모리에 미리 로드. crossorigin 제거 포함.</summary>
-    private async Task PreloadIndexHtmlAsync(string wwwroot)
-    {
-        var indexPath = System.IO.Path.Combine(wwwroot, "index.html");
-        if (!File.Exists(indexPath)) return;
-
-        var html = await File.ReadAllTextAsync(indexPath, Encoding.UTF8);
-        html = html.Replace(" crossorigin", "");
-        _indexHtmlCache = Encoding.UTF8.GetBytes(html);
     }
 
     private void MenuExit_Click(object sender, RoutedEventArgs e) => Close();

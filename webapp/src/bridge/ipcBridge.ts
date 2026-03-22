@@ -2,7 +2,7 @@
   interface Window {
     chrome?: {
       webview?: {
-        postMessage(message: any): void
+        postMessage(message: unknown): void
         addEventListener(type: string, listener: (e: MessageEvent) => void): void
         removeEventListener(type: string, listener: (e: MessageEvent) => void): void
       }
@@ -10,9 +10,18 @@
   }
 }
 
+export interface SavedSSHConnection {
+  host: string
+  port: number
+  username: string
+  privateKey?: string
+  password?: string
+  passphrase?: string
+}
+
 interface PendingRequest {
-  resolve: (value: any) => void
-  reject: (reason: any) => void
+  resolve: (value: unknown) => void
+  reject: (reason: unknown) => void
   timer: ReturnType<typeof setTimeout>
 }
 
@@ -61,7 +70,7 @@ function init() {
   })
 }
 
-export function invoke<T = any>(type: string, payload: any = {}): Promise<T> {
+export function invoke<T = unknown>(type: string, payload: Record<string, unknown> = {}): Promise<T> {
   if (!isWebView2()) {
     return Promise.reject(new Error('WebView2 not available, running in browser mode'))
   }
@@ -73,7 +82,7 @@ export function invoke<T = any>(type: string, payload: any = {}): Promise<T> {
       reject(new Error(`IPC timeout: ${type}`))
     }, REQUEST_TIMEOUT)
 
-    pending.set(id, { resolve, reject, timer })
+    pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer })
     window.chrome!.webview!.postMessage({ id, type, payload })
   })
 }
@@ -87,12 +96,13 @@ export const ssh = {
   state: () => invoke<{ isConnected: boolean; isConnecting: boolean; error?: string; host?: string }>('ssh:state'),
   shellWrite: (data: string) => invoke<{ success: boolean }>('ssh:shell:write', { data }),
   shellRead: () => invoke<{ data: string | null }>('ssh:shell:read'),
+  resize: (cols: number, rows: number) => invoke<{ success: boolean }>('ssh:resize', { cols, rows }),
 }
 
 export const config = {
-  load: () => invoke<{ theme: string; fontSize: number; fontFamily: string; sshConnections: any[]; lastConnection?: string }>('config:load'),
-  save: (cfg: any) => invoke<{ success: boolean }>('config:save', cfg),
-  addConnection: (conn: any) => invoke<{ success: boolean }>('config:connections:add', conn),
+  load: () => invoke<{ theme: 'light' | 'dark'; fontSize: number; fontFamily: string; sshConnections: SavedSSHConnection[]; lastConnection?: string }>('config:load'),
+  save: (cfg: Record<string, unknown>) => invoke<{ success: boolean }>('config:save', cfg),
+  addConnection: (conn: SavedSSHConnection) => invoke<{ success: boolean }>('config:connections:add', conn as unknown as Record<string, unknown>),
   removeConnection: (host: string) => invoke<{ success: boolean }>('config:connections:remove', { host }),
 }
 
@@ -150,26 +160,33 @@ export interface ApiLogSaveResult {
   path: string
 }
 
+function createStreamRequest<T>(
+  type: string,
+  payload: Record<string, unknown>,
+  onChunk?: StreamChunkHandler,
+): Promise<T> {
+  if (!isWebView2()) {
+    return Promise.reject(new Error('WebView2 not available, running in browser mode'))
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const id = crypto.randomUUID()
+    const timer = setTimeout(() => {
+      pending.delete(id)
+      streamListeners.delete(id)
+      reject(new Error(`IPC timeout: ${type}`))
+    }, STREAM_TIMEOUT)
+
+    pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer })
+    if (onChunk) streamListeners.set(id, onChunk)
+    window.chrome!.webview!.postMessage({ id, type, payload })
+  })
+}
+
 export const ai = {
   send: (message: string) => invoke<AiSendResponse>('ai:send', { message }),
-  stream: (message: string, onChunk: StreamChunkHandler) => {
-    if (!isWebView2()) {
-      return Promise.reject(new Error('WebView2 not available, running in browser mode'))
-    }
-
-    return new Promise<AiStreamResponse>((resolve, reject) => {
-      const id = crypto.randomUUID()
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        streamListeners.delete(id)
-        reject(new Error('AI stream timeout'))
-      }, STREAM_TIMEOUT)
-
-      pending.set(id, { resolve, reject, timer })
-      streamListeners.set(id, onChunk)
-      window.chrome!.webview!.postMessage({ id, type: 'ai:stream', payload: { message } })
-    })
-  },
+  stream: (message: string, onChunk: StreamChunkHandler) =>
+    createStreamRequest<AiStreamResponse>('ai:stream', { message }, onChunk),
   cancelStream: () => invoke<{ success: boolean }>('ai:stream:cancel'),
   configure: (config: { model?: string; systemPrompt?: string; maxTokens?: number }) => invoke<{ success: boolean }>('ai:configure', config),
   setModel: (model: string) => invoke<{ success: boolean; model: string }>('ai:set-model', { model }),
@@ -186,34 +203,10 @@ export const ai = {
   setProvider: (provider: string) => invoke<{ success: boolean; provider: string }>('ai:set-provider', { provider }),
   setApiKey: (provider: string, apiKey: string) => invoke<{ success: boolean; provider: string; hasKey: boolean }>('ai:set-apikey', { provider, apiKey }),
   // 스트리밍으로 전환: 30초 타임아웃 → 120초 + 청크 실시간 출력
-  analyzeLast: (onChunk?: StreamChunkHandler) => {
-    if (!isWebView2()) return Promise.reject(new Error('WebView2 not available'))
-    return new Promise<{ content: string }>((resolve, reject) => {
-      const id = crypto.randomUUID()
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        streamListeners.delete(id)
-        reject(new Error('IPC timeout: ai:ssh:analyze'))
-      }, STREAM_TIMEOUT)
-      pending.set(id, { resolve, reject, timer })
-      if (onChunk) streamListeners.set(id, onChunk)
-      window.chrome!.webview!.postMessage({ id, type: 'ai:ssh:analyze', payload: {} })
-    })
-  },
-  suggestCommand: (onChunk?: StreamChunkHandler) => {
-    if (!isWebView2()) return Promise.reject(new Error('WebView2 not available'))
-    return new Promise<{ content: string }>((resolve, reject) => {
-      const id = crypto.randomUUID()
-      const timer = setTimeout(() => {
-        pending.delete(id)
-        streamListeners.delete(id)
-        reject(new Error('IPC timeout: ai:ssh:suggest-command'))
-      }, STREAM_TIMEOUT)
-      pending.set(id, { resolve, reject, timer })
-      if (onChunk) streamListeners.set(id, onChunk)
-      window.chrome!.webview!.postMessage({ id, type: 'ai:ssh:suggest-command', payload: {} })
-    })
-  },
+  analyzeLast: (onChunk?: StreamChunkHandler) =>
+    createStreamRequest<{ content: string }>('ai:ssh:analyze', {}, onChunk),
+  suggestCommand: (onChunk?: StreamChunkHandler) =>
+    createStreamRequest<{ content: string }>('ai:ssh:suggest-command', {}, onChunk),
 }
 
 export const app = {

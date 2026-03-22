@@ -15,8 +15,10 @@ namespace Aitty.Services;
 /// </summary>
 public class LocalLlmService : IAiService
 {
-    private readonly HttpClient _httpClient;
+    private static readonly HttpClient SharedHttpClient = new() { Timeout = TimeSpan.FromMinutes(5) };
+    private readonly HttpClient _httpClient = SharedHttpClient;
     private readonly List<AiChatMessage> _conversationHistory = new();
+    private readonly object _historyLock = new();
 
     // Ollama /api/generate context 토큰 (대화 연속성 유지)
     private long[]? _context;
@@ -26,13 +28,7 @@ public class LocalLlmService : IAiService
     private string? _systemPrompt = "You are a local Linux SSH assistant. Analyze terminal output, explain issues, and suggest safe next commands. Prefer minimal-risk commands first.";
     private string? _apiKey;
 
-    public LocalLlmService()
-    {
-        _httpClient = new HttpClient
-        {
-            Timeout = TimeSpan.FromMinutes(5)
-        };
-    }
+    public LocalLlmService() { }
 
     public string ProviderName => "ollama";
     public bool IsConfigured => true;
@@ -50,9 +46,6 @@ public class LocalLlmService : IAiService
     public void SetApiKey(string apiKey)
     {
         _apiKey = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey.Trim();
-        _httpClient.DefaultRequestHeaders.Remove("Authorization");
-        if (_apiKey is not null)
-            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
     }
 
     public void Configure(AiConfig config)
@@ -72,11 +65,16 @@ public class LocalLlmService : IAiService
 
     public async Task<List<string>> ListModelsAsync(CancellationToken ct = default)
     {
-        using var response = await _httpClient.GetAsync($"{_baseUrl}/api/tags", ct);
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/api/tags");
+        AddAuthHeader(req);
+        using var response = await _httpClient.SendAsync(req, ct);
         response.EnsureSuccessStatusCode();
 
         using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        JsonDocument doc;
+        try { doc = await JsonDocument.ParseAsync(stream, cancellationToken: ct); }
+        catch (JsonException) { return new List<string>(); }
+        using var _ = doc;
 
         var models = new List<string>();
         if (doc.RootElement.TryGetProperty("models", out var modelArray))
@@ -104,12 +102,17 @@ public class LocalLlmService : IAiService
 
     public async Task<AiChatResponse> SendMessageAsync(string userMessage, CancellationToken ct = default)
     {
-        _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
+        lock (_historyLock)
+            _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
 
         var requestBody = BuildGenerateRequest(userMessage, stream: false);
         var json = JsonSerializer.Serialize(requestBody);
-        using var content = new StringContent(json, Encoding.UTF8, "application/json");
-        using var response = await _httpClient.PostAsync($"{_baseUrl}/api/generate", content, ct);
+        using var httpReq = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/generate")
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+        AddAuthHeader(httpReq);
+        using var response = await _httpClient.SendAsync(httpReq, ct);
         var responseText = await response.Content.ReadAsStringAsync(ct);
         response.EnsureSuccessStatusCode();
 
@@ -123,7 +126,8 @@ public class LocalLlmService : IAiService
             ? r.GetString() ?? string.Empty
             : string.Empty;
 
-        _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = message });
+        lock (_historyLock)
+            _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = message });
 
         return new AiChatResponse
         {
@@ -138,7 +142,8 @@ public class LocalLlmService : IAiService
 
     public async Task<AiChatResponse> SendStreamingAsync(string userMessage, Action<string> onChunk, CancellationToken ct = default)
     {
-        _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
+        lock (_historyLock)
+            _conversationHistory.Add(new AiChatMessage { Role = "user", Content = userMessage });
 
         var sw = Stopwatch.StartNew();
         var requestBody = BuildGenerateRequest(userMessage, stream: true);
@@ -147,6 +152,7 @@ public class LocalLlmService : IAiService
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
+        AddAuthHeader(httpRequest);
 
         using var response = await _httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
@@ -184,7 +190,8 @@ public class LocalLlmService : IAiService
 
         sw.Stop();
         var fullContent = builder.ToString();
-        _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = fullContent });
+        lock (_historyLock)
+            _conversationHistory.Add(new AiChatMessage { Role = "assistant", Content = fullContent });
 
         return new AiChatResponse
         {
@@ -217,20 +224,25 @@ public class LocalLlmService : IAiService
 
     public void SetHistory(IEnumerable<AiChatMessage> messages)
     {
-        _conversationHistory.Clear();
-        _conversationHistory.AddRange(messages);
-        _context = null;    // context 토큰 리셋 — 복원된 메시지는 이미 context에 반영됨
+        lock (_historyLock)
+        {
+            _conversationHistory.Clear();
+            _conversationHistory.AddRange(messages);
+            _context = null;
+        }
     }
 
     public void ClearHistory()
     {
-        _conversationHistory.Clear();
-        _context = null;    // context 토큰도 리셋 → 새 대화 시작
+        lock (_historyLock)
+        {
+            _conversationHistory.Clear();
+            _context = null;
+        }
     }
 
     public void Dispose()
     {
-        _httpClient.Dispose();
         GC.SuppressFinalize(this);
     }
 
@@ -251,16 +263,18 @@ public class LocalLlmService : IAiService
             if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
                 return false;
 
-            // 호스트명 → IP 변환
-            if (!IPAddress.TryParse(uri.Host, out var ip))
+            // 호스트명 → IP 변환 (모든 반환 IP 검사하여 DNS 리바인딩 방어)
+            IPAddress[] addresses;
+            if (IPAddress.TryParse(uri.Host, out var ip))
+                addresses = [ip];
+            else
             {
-                var addresses = Dns.GetHostAddresses(uri.Host);
+                addresses = Dns.GetHostAddresses(uri.Host);
                 if (addresses.Length == 0) return false;
-                ip = addresses[0];
             }
 
-            // 클라우드 메타데이터 서비스(169.254.x.x)만 차단
-            return !IsCloudMetadataIp(ip);
+            // 모든 IP에서 클라우드 메타데이터 서비스(169.254.x.x) 차단
+            return !addresses.Any(IsCloudMetadataIp);
         }
         catch
         {
@@ -429,6 +443,12 @@ public class LocalLlmService : IAiService
     {
         var fromEnv = Environment.GetEnvironmentVariable("AITTY_OLLAMA_ENDPOINT");
         return string.IsNullOrWhiteSpace(fromEnv) ? "http://127.0.0.1:11434" : NormalizeBaseUrl(fromEnv);
+    }
+
+    private void AddAuthHeader(HttpRequestMessage request)
+    {
+        if (_apiKey is not null)
+            request.Headers.Add("Authorization", $"Bearer {_apiKey}");
     }
 
     private static string NormalizeBaseUrl(string url) => url.Trim().TrimEnd('/');

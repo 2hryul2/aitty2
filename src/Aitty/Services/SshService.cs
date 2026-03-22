@@ -16,6 +16,7 @@ public class SshService : IDisposable
     private SshClient? _client;
     private ShellStream? _shellStream;
     private readonly object _streamLock = new();  // ShellStream 동시 Read/Write 보호
+    private readonly object _bufferLock = new(); // _recentLines, _lastOutputBuffer, _collectingOutput 보호
     private readonly SshConnectionState _state = new();
     private readonly Queue<string> _recentLines = new();
 
@@ -32,6 +33,10 @@ public class SshService : IDisposable
     {
         try
         {
+            // P1-5: 기존 연결이 있으면 먼저 정리
+            if (_client?.IsConnected == true || _shellStream != null)
+                Disconnect();
+
             _state.IsConnecting = true;
             _state.Error = null;
 
@@ -64,9 +69,12 @@ public class SshService : IDisposable
                 _shellStream = _client.CreateShellStream("xterm", 120, 40, 800, 600, 4096);
             });
 
-            _recentLines.Clear();
-            _lastOutputBuffer.Clear();
-            _collectingOutput = false;
+            lock (_bufferLock)
+            {
+                _recentLines.Clear();
+                _lastOutputBuffer.Clear();
+                _collectingOutput = false;
+            }
             _state.IsConnected = true;
             _state.IsConnecting = false;
             _state.Connection = connection;
@@ -82,9 +90,13 @@ public class SshService : IDisposable
         }
     }
 
+    public void ResizeTerminal(uint columns, uint rows)
+    {
+        _shellStream?.ChangeWindowSize(columns, rows, 0, 0);
+    }
+
     public void Disconnect()
     {
-        _shellStream?.Close();
         _shellStream?.Dispose();
         _shellStream = null;
 
@@ -143,8 +155,11 @@ public class SshService : IDisposable
         // Enter 키(\r) 감지 → 새 명령어 시작: 마지막 출력 버퍼 초기화 후 수집 시작
         if (data.Contains('\r'))
         {
-            _lastOutputBuffer.Clear();
-            _collectingOutput = true;
+            lock (_bufferLock)
+            {
+                _lastOutputBuffer.Clear();
+                _collectingOutput = true;
+            }
         }
     }
 
@@ -163,17 +178,20 @@ public class SshService : IDisposable
         Remember(output);
 
         // 명령어 실행 후 출력을 마지막 출력 버퍼에 수집 (ANSI 코드 제거)
-        if (_collectingOutput && !string.IsNullOrEmpty(output))
+        lock (_bufferLock)
         {
-            var clean = AnsiRegex.Replace(output, string.Empty);
-            foreach (var line in clean.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+            if (_collectingOutput && !string.IsNullOrEmpty(output))
             {
-                var trimmed = line.Trim();
-                if (!string.IsNullOrWhiteSpace(trimmed))
+                var clean = AnsiRegex.Replace(output, string.Empty);
+                foreach (var line in clean.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
                 {
-                    _lastOutputBuffer.Add(trimmed);
-                    if (_lastOutputBuffer.Count > MaxLastOutputLines)
-                        _lastOutputBuffer.RemoveAt(0);
+                    var trimmed = line.Trim();
+                    if (!string.IsNullOrWhiteSpace(trimmed))
+                    {
+                        _lastOutputBuffer.Add(trimmed);
+                        if (_lastOutputBuffer.Count > MaxLastOutputLines)
+                            _lastOutputBuffer.RemoveAt(0);
+                    }
                 }
             }
         }
@@ -184,12 +202,14 @@ public class SshService : IDisposable
     /// <summary>마지막 명령어 실행 이후 SSH 터미널에 출력된 내용만 반환</summary>
     public string GetLastCommandOutput()
     {
-        return string.Join("\n", _lastOutputBuffer);
+        lock (_bufferLock)
+            return string.Join("\n", _lastOutputBuffer);
     }
 
     public string GetRecentOutput(int lineCount = 80)
     {
-        return string.Join("\n", _recentLines.TakeLast(lineCount));
+        lock (_bufferLock)
+            return string.Join("\n", _recentLines.TakeLast(lineCount));
     }
 
     public void Dispose()
@@ -201,16 +221,15 @@ public class SshService : IDisposable
     private void Remember(string? text)
     {
         if (string.IsNullOrEmpty(text))
-        {
             return;
-        }
 
-        foreach (var line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        lock (_bufferLock)
         {
-            _recentLines.Enqueue(line);
-            while (_recentLines.Count > MaxRecentLines)
+            foreach (var line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
             {
-                _recentLines.Dequeue();
+                _recentLines.Enqueue(line);
+                while (_recentLines.Count > MaxRecentLines)
+                    _recentLines.Dequeue();
             }
         }
     }

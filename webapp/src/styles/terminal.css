@@ -59,27 +59,7 @@
   gap: 8px;
 }
 
-.terminal-controls button {
-  padding: 6px 12px;
-  background-color: #1a1a1a;
-  color: #00ff00;
-  border: 1px solid #333;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 12px;
-  font-family: 'Consolas', 'Courier New', monospace;
-  transition: all 0.2s;
-}
-
-.terminal-controls button:hover:not(:disabled) {
-  background-color: #2a2a2a;
-  border-color: #00ff00;
-}
-
-.terminal-controls button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+/* button base styles inherited from index.css */
 
 .ssh-connect-form {
   padding: 8px 12px;
@@ -181,18 +161,13 @@
   font-size: 12px;
 }
 
+/* Green-themed buttons — overrides base button from index.css */
 .llm-settings-panel button,
 .connect-btn {
-  padding: 6px 12px;
   background-color: #0a2a0a;
   color: #0f0;
-  border: 1px solid #0f0;
-  border-radius: 3px;
-  cursor: pointer;
-  font-size: 12px;
-  font-family: 'Consolas', 'Courier New', monospace;
+  border-color: #0f0;
   font-weight: 600;
-  transition: all 0.2s;
 }
 
 .llm-settings-panel button:hover:not(:disabled),
@@ -204,7 +179,6 @@
 .llm-settings-panel button:disabled,
 .connect-btn:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
 }
 
 .prompt-group textarea {
