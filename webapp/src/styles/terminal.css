@@ -163,7 +163,8 @@
 
 /* Green-themed buttons — overrides base button from index.css */
 .llm-settings-panel button,
-.connect-btn {
+.connect-btn,
+.terminal-controls button.active {
   background-color: #0a2a0a;
   color: #0f0;
   border-color: #0f0;
@@ -200,11 +201,6 @@
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
-}
-
-.terminal-controls button.active {
-  border-color: #0f0;
-  background-color: #0a2a0a;
 }
 
 .ai-terminal {

@@ -1,5 +1,5 @@
 :root {
-  font-family: 'Consolas', 'Courier New', monospace;
+  font-family: 'Consolas', 'Courier New', 'Malgun Gothic', '맑은 고딕', monospace;
   line-height: 1.5;
   font-weight: 400;
 
@@ -61,7 +61,7 @@ button {
   padding: 6px 12px;
   font-size: 12px;
   font-weight: 500;
-  font-family: 'Consolas', 'Courier New', monospace;
+  font-family: 'Consolas', 'Courier New', 'Malgun Gothic', '맑은 고딕', monospace;
   background-color: #1a1a1a;
   color: #00ff00;
   cursor: pointer;

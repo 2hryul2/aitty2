@@ -1,4 +1,4 @@
-﻿# Aitty
+﻿# Aitty v0.2.3
 
 Aitty is a Windows desktop SSH + AI terminal application built with:
 
@@ -6,7 +6,7 @@ Aitty is a Windows desktop SSH + AI terminal application built with:
 - `WebView2` for the embedded frontend shell
 - `React + Vite` for the actual UI
 - `SSH.NET` for SSH connectivity
-- Anthropic Claude API integration for the AI panel
+- Multi-provider AI integration (Claude, OpenAI, Gemini, Ollama)
 
 ## Architecture
 
@@ -37,7 +37,7 @@ You need two processes during development.
 ### 1. Start the web frontend
 
 ```powershell
-cd D:\source\aitty2\webapp
+cd D:\source\aitty_v3\webapp
 npm.cmd install
 npm.cmd run dev
 ```
@@ -49,7 +49,7 @@ This starts Vite on `http://localhost:5173`.
 In a second terminal:
 
 ```powershell
-cd D:\source\aitty2
+cd D:\source\aitty_v3
 dotnet run --project .\src\Aitty\Aitty.csproj
 ```
 
@@ -95,20 +95,22 @@ Implemented in `src/Aitty/Services/SshService.cs`:
 
 ## AI Features
 
-Implemented in `src/Aitty/Services/ClaudeApiService.cs`:
+Implemented in `src/Aitty/Services/AiServiceManager.cs` + provider services:
 
-- Claude Messages API calls
-- streaming responses
-- model switching
-- conversation history
-- system prompt configuration
+- Multi-provider support: Ollama (local), Claude, OpenAI, Gemini
+- Streaming responses with real-time chunk rendering
+- Model switching per provider
+- Conversation history with session save/restore
+- System prompt configuration
+- DPAPI-encrypted API key storage
+- SSH output analysis and command suggestion
 
 ## Testing
 
 Frontend tests:
 
 ```powershell
-cd D:\source\aitty2\webapp
+cd D:\source\aitty_v3\webapp
 npm.cmd test
 npm.cmd run test:ui
 ```
@@ -116,7 +118,7 @@ npm.cmd run test:ui
 WPF build check:
 
 ```powershell
-cd D:\source\aitty2
+cd D:\source\aitty_v3
 dotnet build .\src\Aitty\Aitty.csproj
 ```
 

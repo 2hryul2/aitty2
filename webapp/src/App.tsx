@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { config as configBridge } from '@bridge/ipcBridge'
+import { config as configBridge, app as appBridge } from '@bridge/ipcBridge'
 import { logger } from '@utils/logger'
 import { SSHTerminal } from '@components/SSHTerminal'
 import { AITerminal } from '@components/AITerminal'
@@ -20,6 +20,7 @@ const SPLIT_MAX = 80  // 최대 패널 너비 %
 function App() {
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [appVersion, setAppVersion] = useState<string>('')
   const [sshConnection, setSshConnection] = useState<SSHConnection | undefined>()
   const [sshConnected, setSshConnected] = useState(false)
   const [splitRatio, setSplitRatio] = useState(50)  // SSH 패널 너비 %
@@ -30,9 +31,13 @@ function App() {
   useEffect(() => {
     const initializeApp = async () => {
       try {
-        const loaded = await configBridge.load().catch(() => null)
-        setConfig(loaded ?? DEFAULT_CONFIG)
-        logger.info('App initialized', { source: loaded ? 'ipc' : 'default' })
+        const [loaded, versionResult] = await Promise.allSettled([
+          configBridge.load(),
+          appBridge.version(),
+        ])
+        setConfig(loaded.status === 'fulfilled' ? loaded.value : DEFAULT_CONFIG)
+        setAppVersion(versionResult.status === 'fulfilled' ? versionResult.value.version : '')
+        logger.info('App initialized', { source: loaded.status === 'fulfilled' ? 'ipc' : 'default' })
       } catch (error) {
         logger.error('Failed to initialize app', { error })
         setConfig(DEFAULT_CONFIG)
@@ -96,7 +101,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1><span className="shinhan">신한DS</span> Aitty <span className="subtitle">(SSH + AI Terminal for Windows, v0.1.0)</span></h1>
+        <h1><span className="shinhan">신한DS</span> Aitty <span className="subtitle">(SSH + AI Terminal for Windows{appVersion ? `, v${appVersion}` : ''})</span></h1>
       </header>
 
       <div className="app-layout" ref={layoutRef}>
@@ -116,7 +121,7 @@ function App() {
         />
 
         <div className="terminal-panel ai-panel" style={{ flex: 1 }}>
-          <AITerminal />
+          <AITerminal sshConnected={sshConnected} />
         </div>
       </div>
 

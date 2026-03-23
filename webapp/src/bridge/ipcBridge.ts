@@ -109,6 +109,7 @@ export const config = {
 export const keys = {
   list: () => invoke<{ keys: string[]; directory: string }>('keys:list'),
   validate: (path: string) => invoke<{ valid: boolean }>('keys:validate', { path }),
+  browse: () => invoke<{ selected: boolean; path: string | null; valid: boolean }>('keys:browse'),
   sshConfig: () => invoke<Record<string, Record<string, string>>>('keys:ssh-config'),
 }
 

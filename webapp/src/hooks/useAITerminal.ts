@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Terminal } from 'xterm'
 import { ai, session, type AiProvider } from '@bridge/ipcBridge'
+import type { ChatMessage } from '@app-types/chat'
 
 export const DEFAULT_MODEL = 'qwen2.5-coder:7b'
 export const DEFAULT_SYSTEM_PROMPT = 'You are a local Linux SSH assistant. Analyze terminal output, explain issues, and suggest safe next commands. Prefer minimal-risk commands first.'
@@ -31,7 +32,7 @@ export function isWebView2(): boolean {
   return !!window.chrome?.webview
 }
 
-const THINKING_MESSAGES = [
+export const THINKING_MESSAGES = [
   'AI가 지식의 바다를 헤엄치는 중! 잠시 후 최선의 답변을 가져다 드릴게요...',
   'AI 뉴런들이 전속력으로 달리는 중! 최고의 답변을 향해 질주하고 있습니다...',
   'AI가 수천만 개의 파라미터를 총동원 중! 최적의 답을 조합하고 있어요...',
@@ -116,6 +117,10 @@ export interface UseAITerminalReturn {
   handleClear: () => void
   sendMessage: (message: string) => Promise<void>
 
+  // chat
+  chatMessages: ChatMessage[]
+  setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
+
   // startup
   initializeOnMount: (term: Terminal) => void
 }
@@ -165,6 +170,8 @@ export function useAITerminal(): UseAITerminalReturn {
       return true
     }
   })
+
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
 
   const providersRef = useRef<AiProvider[]>([])
   useEffect(() => { providersRef.current = providers }, [providers])
@@ -464,12 +471,21 @@ export function useAITerminal(): UseAITerminalReturn {
     isProcessingRef.current = true
     term.writeln('')
 
+    // Chat tab sync
+    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: '🔍 SSH 출력 AI 분석 요청', timestamp: Date.now() }
+    const assistantId = crypto.randomUUID()
+    const assistantMsg: ChatMessage = { id: assistantId, role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true }
+    setChatMessages(prev => [...prev, userMsg, assistantMsg])
+
     const chunkBuffer: string[] = []
     let animationDone = false
+    const contentRef = { current: '' }
     const analyzePromise = ai.analyzeLast((chunk) => {
       if (!isProcessingRef.current) return
       if (animationDone) term.write(chunk)
       else chunkBuffer.push(chunk)
+      contentRef.current += chunk
+      setChatMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: contentRef.current } : m))
     })
 
     const randomMsg = THINKING_MESSAGES[Math.floor(Math.random() * THINKING_MESSAGES.length)]
@@ -502,6 +518,8 @@ export function useAITerminal(): UseAITerminalReturn {
       isProcessingRef.current = false
       setIsBusy(false)
       writePrompt()
+      setChatMessages(prev => prev.map(m => m.id === assistantId ? { ...m, isStreaming: false } : m))
+      window.dispatchEvent(new CustomEvent('ai-streaming-end'))
     }
   }, [writeLine, writePrompt])
 
@@ -591,20 +609,31 @@ export function useAITerminal(): UseAITerminalReturn {
     setIsStreaming(true)
     term.writeln('')
 
+    // Chat tab sync: push user message
+    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: message, timestamp: Date.now() }
+    const assistantId = crypto.randomUUID()
+    const assistantMsg: ChatMessage = { id: assistantId, role: 'assistant', content: '', timestamp: Date.now(), isStreaming: true }
+    setChatMessages(prev => [...prev, userMsg, assistantMsg])
+
     if (!isWebView2()) {
       term.writeln('\x1b[31mWebView2 not available. Running in browser mode.\x1b[0m')
       term.writeln('\x1b[33mAI calls require the native WPF host.\x1b[0m')
       isProcessingRef.current = false
       setIsStreaming(false)
+      setChatMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: 'WebView2 not available.', isStreaming: false } : m))
       return
     }
 
     const chunkBuffer: string[] = []
     let animationDone = false
+    const contentRef = { current: '' }
     const streamPromise = ai.stream(message, (chunk) => {
       if (!isProcessingRef.current) return
       if (animationDone) term.write(chunk)
       else chunkBuffer.push(chunk)
+      // Chat tab sync: accumulate content
+      contentRef.current += chunk
+      setChatMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: contentRef.current } : m))
     })
 
     const randomMsg = THINKING_MESSAGES[Math.floor(Math.random() * THINKING_MESSAGES.length)]
@@ -637,6 +666,7 @@ export function useAITerminal(): UseAITerminalReturn {
     } finally {
       isProcessingRef.current = false
       setIsStreaming(false)
+      setChatMessages(prev => prev.map(m => m.id === assistantId ? { ...m, isStreaming: false } : m))
       window.dispatchEvent(new CustomEvent('ai-streaming-end'))
     }
   }, [])
@@ -683,6 +713,7 @@ export function useAITerminal(): UseAITerminalReturn {
     termRef.current?.clear()
     writePrompt()
     inputBufferRef.current = ''
+    setChatMessages([])
   }, [writePrompt])
 
   // Called from AITerminal after xterm is created
@@ -703,6 +734,23 @@ export function useAITerminal(): UseAITerminalReturn {
             if (saved.systemPrompt) setSystemPrompt(saved.systemPrompt)
             const date = new Date(saved.savedAt).toLocaleString('ko-KR')
             term.writeln(`\x1b[2m[세션 복원: ${date} | ${saved.messageCount}개 메시지]\x1b[0m`)
+
+            // Load chat history for Chat tab (only when 로그저장 is enabled)
+            const logEnabled = localStorage.getItem('aitty.saveApiLog') !== '0'
+            if (logEnabled) {
+              try {
+                const history = await ai.history()
+                if (history.messages?.length) {
+                  const restored: ChatMessage[] = history.messages.map((m, i) => ({
+                    id: `restored-${i}`,
+                    role: m.role as 'user' | 'assistant',
+                    content: m.content,
+                    timestamp: new Date(saved.savedAt).getTime() + i,
+                  }))
+                  setChatMessages(restored)
+                }
+              } catch { /* history load failure — non-critical */ }
+            }
           }
         } catch { /* 복원 실패 — 무시하고 새 세션 시작 */ }
 
@@ -712,7 +760,7 @@ export function useAITerminal(): UseAITerminalReturn {
         }
         startupTracePrinted = true
         try {
-          const connected = await runDetailedConnectionTraceRef.current('Startup', false)
+          const connected = await runDetailedConnectionTraceRef.current('Startup', true)
           if (connected) {
             setIsApplySuccess(true)
           }
@@ -765,6 +813,9 @@ export function useAITerminal(): UseAITerminalReturn {
     setSaveApiLog,
     setIsDirty,
     setIsApplySuccess,
+
+    chatMessages,
+    setChatMessages,
 
     writePrompt,
     writeLine,

@@ -116,6 +116,7 @@ public class IpcHandler
 
             "keys:list"                => await HandleKeysList(),
             "keys:validate"            => await HandleKeysValidate(msg.Payload),
+            "keys:browse"              => await HandleKeysBrowse(),
             "keys:ssh-config"          => await HandleKeysSshConfig(),
 
             // ── AI 공통 ──────────────────────────────────── //
@@ -238,6 +239,27 @@ public class IpcHandler
 
     private async Task<object> HandleKeysList() { var keys = await _keyManagerService.FindKeysAsync(); return new { keys, directory = _keyManagerService.GetKeyDirectory() }; }
     private async Task<object> HandleKeysValidate(object? payload) { var valid = await _keyManagerService.IsValidKeyFileAsync(DeserializePayload<KeyPathPayload>(payload).Path); return new { valid }; }
+
+    private async Task<object> HandleKeysBrowse()
+    {
+        var result = await _webView.Dispatcher.InvokeAsync(() =>
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "Select SSH Private Key",
+                Filter = "All Files (*.*)|*.*|PEM Files (*.pem)|*.pem|PPK Files (*.ppk)|*.ppk",
+                InitialDirectory = _keyManagerService.GetKeyDirectory(),
+            };
+            return dialog.ShowDialog() == true ? dialog.FileName : null;
+        });
+
+        if (result is null)
+            return new { selected = false, path = (string?)null, valid = false };
+
+        var valid = await _keyManagerService.IsValidKeyFileAsync(result);
+        return new { selected = true, path = result, valid };
+    }
+
     private async Task<object> HandleKeysSshConfig() => await _keyManagerService.ReadSshConfigAsync();
 
     // ── AI 공통 ────────────────────────────────────────────── //
@@ -258,7 +280,7 @@ public class IpcHandler
         var response = await _aiManager.Active.SendStreamingAsync(data.Message, chunk =>
         {
             var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:stream:chunk", Payload = new { chunk } };
-            _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
+            _ = _webView.Dispatcher.InvokeAsync(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
         }, _streamingCts.Token);
 
         // Level 3 자동 로그 (fire-and-forget — 로그 실패가 주 기능에 영향 X)
@@ -386,7 +408,7 @@ public class IpcHandler
         var response = await _aiManager.Active.SendStreamingAsync(prompt, chunk =>
         {
             var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:ssh:analyze:chunk", Payload = new { chunk } };
-            _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
+            _ = _webView.Dispatcher.InvokeAsync(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
         });
 
         _ = AiChatLogger.AppendAsync(_aiManager.ActiveProvider, response.Model, null, prompt, response);
@@ -404,7 +426,7 @@ public class IpcHandler
         var response = await _aiManager.Active.SendStreamingAsync(prompt, chunk =>
         {
             var chunkResponse = new IpcResponse { Id = msg.Id, Type = "ai:ssh:suggest:chunk", Payload = new { chunk } };
-            _webView.Dispatcher.Invoke(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
+            _ = _webView.Dispatcher.InvokeAsync(() => _webView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(chunkResponse, JsonOptions)));
         });
 
         _ = AiChatLogger.AppendAsync(_aiManager.ActiveProvider, response.Model, null, prompt, response);

@@ -11,7 +11,7 @@
   height: 100vh;
   background-color: #000;
   color: #00ff00;
-  font-family: 'Consolas', 'Courier New', monospace;
+  font-family: 'Consolas', 'Courier New', 'Malgun Gothic', '맑은 고딕', monospace;
 }
 
 .app.loading {

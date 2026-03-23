@@ -1,16 +1,24 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
 import { useTerminalResize } from '@hooks/useTerminalResize'
 import { useAITerminal, charDisplayWidth, isWebView2 } from '@hooks/useAITerminal'
-import { ai } from '@bridge/ipcBridge'
+import { ai, ssh } from '@bridge/ipcBridge'
 import { logger } from '@utils/logger'
 import { AISettingsPanel } from '@components/AISettingsPanel'
+import ChatPanel from '@components/ChatPanel'
+import '@styles/chat.css'
 
-export function AITerminal() {
+interface AITerminalProps {
+  sshConnected?: boolean
+}
+
+export function AITerminal({ sshConnected }: AITerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  const chatInputRef = useRef<HTMLTextAreaElement>(null)
+  const [activeTab, setActiveTab] = useState<'chat' | 'cli'>('chat')
 
   const hook = useAITerminal()
   const {
@@ -37,6 +45,7 @@ export function AITerminal() {
     apiKey,
     providers,
     saveApiLog,
+    chatMessages,
 
     setIsSettingsOpen,
     setIsSystemPromptOpen,
@@ -54,6 +63,7 @@ export function AITerminal() {
     handleAnalyzeClick,
     handleCancel,
     handleClear,
+    sendMessage,
 
     initializeOnMount,
   } = hook
@@ -181,6 +191,13 @@ export function AITerminal() {
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Refit xterm when switching to CLI tab
+  useEffect(() => {
+    if (activeTab === 'cli' && fitAddonRef.current) {
+      setTimeout(() => fitAddonRef.current?.fit(), 50)
+    }
+  }, [activeTab])
+
   const currentProviderInfo = providers.find(p => p.id === activeProvider)
   const requiresApiKey = currentProviderInfo?.requiresApiKey ?? false
   const providerDisplayName = currentProviderInfo?.name ?? activeProvider
@@ -190,12 +207,45 @@ export function AITerminal() {
     setIsApplySuccess(false)
   }, [setIsDirty, setIsApplySuccess])
 
+  // Chat tab: send message from input bar
+  const handleChatSend = useCallback(() => {
+    const textarea = chatInputRef.current
+    if (!textarea) return
+    const message = textarea.value.trim()
+    if (!message || isStreaming || isBusy) return
+    textarea.value = ''
+    textarea.style.height = '36px'
+    sendMessage(message)
+  }, [sendMessage, isStreaming, isBusy])
+
+  // Chat tab: Enter to send, Shift+Enter for newline
+  const handleChatKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleChatSend()
+    }
+  }, [handleChatSend])
+
+  // Chat tab: auto-grow textarea
+  const handleChatInput = useCallback(() => {
+    const textarea = chatInputRef.current
+    if (!textarea) return
+    textarea.style.height = '36px'
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 96)}px`
+  }, [])
+
+  // Run command from code block in SSH terminal
+  const handleRunCommand = useCallback((command: string) => {
+    if (!sshConnected) return
+    ssh.shellWrite(command + '\n').catch(() => {})
+  }, [sshConnected])
+
   return (
     <div className="ai-terminal local-llm-terminal">
       <div className="terminal-header">
         <h2>Local LLM Terminal</h2>
         <div className="terminal-status">
-          {isConfigured ? (
+          {isConfigured && !(requiresApiKey && !apiKey) ? (
             <>
               <span className="status-badge connected">Ready</span>
               <span className="status-info">
@@ -204,7 +254,9 @@ export function AITerminal() {
             </>
           ) : (
             <span className="status-badge disconnected">
-              {`${providerDisplayName} Offline`}
+              {requiresApiKey && !apiKey
+                ? `${providerDisplayName} Offline — API Key 없음`
+                : `${providerDisplayName} Offline`}
             </span>
           )}
           {isStreaming && <span className="status-badge streaming">Generating</span>}
@@ -214,13 +266,15 @@ export function AITerminal() {
             {isSettingsOpen ? 'Hide Settings' : 'Settings'}
           </button>
           <button onClick={handleClear}>Clear</button>
-          <button
-            onClick={handleAnalyzeClick}
-            disabled={!isConfigured || isBusy}
-            style={{ color: '#ffc107', borderColor: '#ffc107' }}
-          >
-            AI분석
-          </button>
+          {activeTab === 'cli' && (
+            <button
+              onClick={handleAnalyzeClick}
+              disabled={!isConfigured || isBusy}
+              style={{ color: '#ffc107', borderColor: '#ffc107' }}
+            >
+              AI분석
+            </button>
+          )}
           {isStreaming && <button onClick={handleCancel}>Cancel</button>}
         </div>
       </div>
@@ -254,9 +308,69 @@ export function AITerminal() {
         />
       )}
 
-      <div className="terminal-container" ref={resizeRef} style={{ flex: 1 }}>
-        <div ref={terminalRef} className="terminal-content" />
+      {/* Tab Switcher */}
+      <div className="tab-switcher">
+        <button
+          className={`tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
+          onClick={() => setActiveTab('chat')}
+        >
+          💬 Chat
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'cli' ? 'active' : ''}`}
+          onClick={() => setActiveTab('cli')}
+        >
+          ⌨️ CLI
+        </button>
       </div>
+
+      {/* Tab Content */}
+      <div className="tab-content" ref={resizeRef}>
+        {/* Chat Tab */}
+        <div className={`tab-pane ${activeTab !== 'chat' ? 'hidden' : ''}`}>
+          <ChatPanel
+            messages={chatMessages}
+            isStreaming={isStreaming}
+            sshConnected={sshConnected}
+            onRunCommand={handleRunCommand}
+          />
+        </div>
+
+        {/* CLI Tab */}
+        <div className={`tab-pane ${activeTab !== 'cli' ? 'hidden' : ''}`}>
+          <div className="terminal-container" style={{ flex: 1 }}>
+            <div ref={terminalRef} className="terminal-content" />
+          </div>
+        </div>
+      </div>
+
+      {/* Chat Input Bar (Chat tab only) */}
+      {activeTab === 'chat' && (
+        <div className="chat-input-bar">
+          <textarea
+            ref={chatInputRef}
+            placeholder="메시지를 입력하세요... (Enter: 전송, Shift+Enter: 줄바꿈)"
+            onKeyDown={handleChatKeyDown}
+            onInput={handleChatInput}
+            disabled={isStreaming || isBusy}
+            rows={1}
+          />
+          <button
+            className="chat-input-btn"
+            onClick={handleChatSend}
+            disabled={isStreaming || isBusy}
+          >
+            전송
+          </button>
+          <button
+            className="chat-input-btn analyze-btn"
+            onClick={handleAnalyzeClick}
+            disabled={!isConfigured || isBusy}
+          >
+            AI분석
+          </button>
+        </div>
+      )}
     </div>
   )
 }

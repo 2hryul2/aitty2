@@ -97,9 +97,8 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
           )
         }
       } catch {
-        // Connection lost or read error — stop polling
-        stopPolling()
-        return
+        // IPC 일시 에러 → 폴링 중단 대신 백오프 후 재시도
+        pollIntervalRef.current = POLL_INTERVAL_MAX
       } finally {
         isPollingRef.current = false
       }
@@ -415,24 +414,46 @@ export function SSHTerminal({ connection, onRequestConnect, onConnect, onDisconn
           <div className="form-row">
             <div className="form-group" style={{ flex: 1 }}>
               <label>Private Key (optional)</label>
-              {availableKeys.length > 0 ? (
-                <select
-                  value={formData.privateKey}
-                  onChange={e => setFormData(p => ({ ...p, privateKey: e.target.value }))}
+              <div style={{ display: 'flex', gap: '4px' }}>
+                {availableKeys.length > 0 ? (
+                  <select
+                    value={formData.privateKey}
+                    onChange={e => setFormData(p => ({ ...p, privateKey: e.target.value }))}
+                    style={{ flex: 1 }}
+                  >
+                    <option value="">None (use password)</option>
+                    {availableKeys.map(k => (
+                      <option key={k} value={k}>{k.replace(/^.*[/\\]/, '')}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={formData.privateKey}
+                    onChange={e => setFormData(p => ({ ...p, privateKey: e.target.value }))}
+                    placeholder="~/.ssh/id_rsa"
+                    style={{ flex: 1 }}
+                  />
+                )}
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const result = await keysBridge.browse()
+                      if (result.selected && result.path) {
+                        setFormData(p => ({ ...p, privateKey: result.path! }))
+                        if (!availableKeys.includes(result.path))
+                          setAvailableKeys(prev => [...prev, result.path!])
+                        if (!result.valid)
+                          termRef.current?.writeln('\x1b[33m⚠ 선택한 키 파일이 유효하지 않을 수 있습니다.\x1b[0m')
+                      }
+                    } catch { /* dialog cancelled or IPC error */ }
+                  }}
+                  style={{ whiteSpace: 'nowrap', padding: '4px 10px' }}
                 >
-                  <option value="">None (use password)</option>
-                  {availableKeys.map(k => (
-                    <option key={k} value={k}>{k.replace(/^.*[/\\]/, '')}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="text"
-                  value={formData.privateKey}
-                  onChange={e => setFormData(p => ({ ...p, privateKey: e.target.value }))}
-                  placeholder="~/.ssh/id_rsa"
-                />
-              )}
+                  Browse...
+                </button>
+              </div>
             </div>
           </div>
           <div className="form-row">
